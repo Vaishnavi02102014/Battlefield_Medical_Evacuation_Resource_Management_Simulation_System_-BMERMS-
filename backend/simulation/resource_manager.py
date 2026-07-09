@@ -31,7 +31,12 @@ SURGE_QUEUE_THRESHOLD: int = 10
 SURGE_RELEASE_THRESHOLD: int = 4
 
 
-def dispatch_transport(severity: str, clock: SimulationClock, rng: random.Random) -> tuple[str, int | None, int]:
+def dispatch_transport(
+    severity: str,
+    clock: SimulationClock,
+    casualty_arrival_time,
+    rng: random.Random,
+) -> tuple[str, int | None, int]:
     """
     Choose and dispatch a transport resource appropriate to casualty severity.
 
@@ -50,15 +55,21 @@ def dispatch_transport(severity: str, clock: SimulationClock, rng: random.Random
         heli = crud.get_available_helicopter()
         if heli is not None:
             transit = EVACUATION_TRANSIT_MINUTES["Helicopter"]
-            release_time = clock.current_time + timedelta(minutes=transit)
-            crud.dispatch_helicopter(heli.helicopter_id, release_time.strftime("%Y-%m-%d %H:%M"))
+            release_time = casualty_arrival_time + timedelta(minutes=transit)
+            crud.dispatch_helicopter(
+                heli.helicopter_id,
+                release_time.strftime("%Y-%m-%d %H:%M")
+            )
             return "Helicopter", heli.helicopter_id, transit
 
         amb = crud.get_available_ambulance()
         if amb is not None:
             transit = EVACUATION_TRANSIT_MINUTES["Ambulance"]
-            release_time = clock.current_time + timedelta(minutes=transit)
-            crud.dispatch_ambulance(amb.ambulance_id, release_time.strftime("%Y-%m-%d %H:%M"))
+            release_time = casualty_arrival_time + timedelta(minutes=transit)
+            crud.dispatch_ambulance(
+                amb.ambulance_id,
+                release_time.strftime("%Y-%m-%d %H:%M")
+            )
             return "Ambulance", amb.ambulance_id, transit
 
         return "Foot", None, EVACUATION_TRANSIT_MINUTES["Foot"]
@@ -67,8 +78,11 @@ def dispatch_transport(severity: str, clock: SimulationClock, rng: random.Random
         amb = crud.get_available_ambulance()
         if amb is not None:
             transit = EVACUATION_TRANSIT_MINUTES["Ambulance"]
-            release_time = clock.current_time + timedelta(minutes=transit)
-            crud.dispatch_ambulance(amb.ambulance_id, release_time.strftime("%Y-%m-%d %H:%M"))
+            release_time = casualty_arrival_time + timedelta(minutes=transit)
+            crud.dispatch_ambulance(
+                amb.ambulance_id,
+                release_time.strftime("%Y-%m-%d %H:%M")
+            )
             return "Ambulance", amb.ambulance_id, transit
         return "Foot", None, EVACUATION_TRANSIT_MINUTES["Foot"]
 
@@ -77,8 +91,11 @@ def dispatch_transport(severity: str, clock: SimulationClock, rng: random.Random
         amb = crud.get_available_ambulance()
         if amb is not None:
             transit = EVACUATION_TRANSIT_MINUTES["Ambulance"]
-            release_time = clock.current_time + timedelta(minutes=transit)
-            crud.dispatch_ambulance(amb.ambulance_id, release_time.strftime("%Y-%m-%d %H:%M"))
+            release_time = casualty_arrival_time + timedelta(minutes=transit)
+            crud.dispatch_ambulance(
+                amb.ambulance_id,
+                release_time.strftime("%Y-%m-%d %H:%M")
+            )
             return "Ambulance", amb.ambulance_id, transit
     return "Foot", None, EVACUATION_TRANSIT_MINUTES["Foot"]
 

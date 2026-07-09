@@ -33,7 +33,7 @@ import streamlit as st
 
 from components.metric_card import metric_card
 from components.panel import panel
-from data.patients_mock_data import (
+from services.patients_service import (
     get_all_casualties,
     get_all_facility_names,
     get_facility_name,
@@ -41,8 +41,6 @@ from data.patients_mock_data import (
     get_queue_entry,
     get_latest_treatment,
 )
-
-MAX_KPI_CARDS = 6
 
 # Same accent hex values Facilities' console design uses, so badges/text
 # colors match exactly across both pages.
@@ -56,13 +54,18 @@ _ACCENT = {
 SEVERITY_ACCENT: dict[str, str] = {
     "Critical": "danger", "Serious": "warning", "Moderate": "info", "Mild": "primary",
 }
-PRIORITY_ACCENT: dict[str, str] = {"P1": "danger", "P2": "warning", "P3": "primary"}
+PRIORITY_ACCENT: dict[str, str] = {"P0": "danger", "P1": "danger", "P2": "warning", "P3": "primary"}
 STATUS_ACCENT: dict[str, str] = {
-    "Waiting": "warning", "In Treatment": "info", "Recovered": "primary", "Returned to Duty": "primary",
+    "Waiting": "warning",
+    "Being Evacuated": "warning",
+    "Under Treatment": "info",
+    "Transferred": "warning",
+    "Recovered": "primary",
+    "Returned To Duty": "primary",
 }
 
 # Operational (not alphabetical) ordering for sort options.
-PRIORITY_ORDER: dict[str, int] = {"P1": 0, "P2": 1, "P3": 2}
+PRIORITY_ORDER: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2, "P3": 4}
 SEVERITY_ORDER: dict[str, int] = {"Critical": 0, "Serious": 1, "Moderate": 2, "Mild": 3}
 SORT_OPTIONS: tuple[str, ...] = ("Priority", "Severity", "Arrival Time", "Waiting Time")
 
@@ -204,24 +207,29 @@ def _inject_console_css() -> None:
 
 
 def _render_kpi_row() -> None:
-    """
-    Row 1 — fixed 6-column KPI strip. Cards are derived from whichever
-    distinct Casualty.status values exist in the loaded dataset (capped
-    at MAX_KPI_CARDS) — the layout itself never grows beyond 6 columns
-    even if more status values appear later.
-    """
     casualties = get_all_casualties()
-    distinct_statuses: list[str] = []
-    for casualty in casualties:
-        if casualty["status"] not in distinct_statuses:
-            distinct_statuses.append(casualty["status"])
-    distinct_statuses = distinct_statuses[:MAX_KPI_CARDS]
 
-    columns = st.columns(MAX_KPI_CARDS)
-    for column, status in zip(columns, distinct_statuses):
-        count = sum(1 for c in casualties if c["status"] == status)
+    metrics = [
+        ("IN TREATMENT", "Under Treatment"),
+        ("WAITING", "Waiting"),
+        ("RECOVERED", "Recovered"),
+        ("RETURNED TO DUTY", "Returned To Duty"),
+    ]
+
+    columns = st.columns(4)
+
+    for column, (title, backend_status) in zip(columns, metrics):
+        count = sum(
+            1 for c in casualties
+            if c["status"] == backend_status
+        )
+
         with column:
-            metric_card(title=status, value=count, color=STATUS_ACCENT.get(status, "info"))
+            metric_card(
+                title=title,
+                value=count,
+                color=STATUS_ACCENT.get(backend_status, "info"),
+            )
 
 
 def _style_registry_table(dataframe: pd.DataFrame):
@@ -513,6 +521,11 @@ def render() -> None:
     """Render the Patients page: KPI row, Registry | Distribution, Detail."""
     _inject_console_css()
     _render_kpi_row()
+
+    st.markdown(
+        "<div style='height:12px'></div>",
+        unsafe_allow_html=True,
+    )
 
     registry_col, distribution_col = st.columns([2, 1])
     with registry_col:

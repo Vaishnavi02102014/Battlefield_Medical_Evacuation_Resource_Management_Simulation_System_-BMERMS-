@@ -134,6 +134,12 @@ Generator never touches the Mission Log.
 from __future__ import annotations
 import html
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+from backend.database import crud
+from backend.simulation.simulation_controller import SimulationController
+from services import resources_service
+from services import facilities_service
+from services import ai_service
  
 from components.panel import panel
 from components.buttons import primary_button, secondary_button
@@ -150,55 +156,94 @@ from utils.theme import resolve_color, COLOR_TEXT_SECONDARY, COLOR_BORDER
 # VISIBILITY_LEVELS; fleet totals match AMBULANCE_FLEET_SIZE (20),
 # HELICOPTER_FLEET_SIZE (6), and MEDICAL_TEAM_COUNT (16).
 # --------------------------------------------------------------------------
-DEFAULT_SIM_STATUS: str = "Running"
+DEFAULT_SIM_STATUS: str = "Stopped"
 DEFAULT_SIM_SPEED: int = 1
 SIM_SPEEDS: list[int] = [1, 2, 5, 10]
  
+TICK_INTERVAL_MS: int = 2000
 CURRENT_TICK: str = "12,842"
-ELAPSED_TIME: str = "02:14:45"
  
-CURRENT_OPERATION: dict = {
-    "operation_name": "Operation Iron Sentinel",
-    "sector": "Sector Bravo — Northern Frontier",
-}
+# Current Operation: live from crud (Phase 6B.3).
+# Rebuilt on every render() call.
+
+def _build_current_operation() -> dict:
+    operation = crud.get_active_operation()
+    operation_name = (
+        operation.operation_name
+        if operation
+        else "No Active Operation"
+    )
+
+    recent_incidents = crud.get_recent_incidents()
+    sector = (
+        recent_incidents[0].battle_sector
+        if recent_incidents
+        else "No Active Incidents"
+    )
+
+    return {
+        "operation_name": operation_name,
+        "sector": sector,
+    }
+
+
+CURRENT_OPERATION: dict = {}
 
 # Resource fleets: (name, icon, available, busy, returning, maintenance).
 # Totals match the backend's fixed fleet sizes exactly.
-RESOURCE_STATUS: list[dict] = [
-    {"name": "Ambulances", "icon": "🚑", "available": 12, "dispatched": 8,},
-    {"name": "Helicopters", "icon": "🚁", "available": 3, "dispatched": 3,},
-    {"name": "Medical Teams", "icon": "🧑‍⚕️", "available": 9, "dispatched": 7,},
-]
+def _build_resource_status() -> list[dict]:
+    fleet = resources_service.get_fleet_status()
+    teams = resources_service.get_medical_team_status()
+
+    return [
+        {
+            "name": "Ambulances",
+            "icon": "🚑",
+            "available": fleet["ambulances"]["available"],
+            "dispatched": fleet["ambulances"]["dispatched"],
+        },
+        {
+            "name": "Helicopters",
+            "icon": "🚁",
+            "available": fleet["helicopters"]["available"],
+            "dispatched": fleet["helicopters"]["dispatched"],
+        },
+        {
+            "name": "Medical Teams",
+            "icon": "🧑‍⚕️",
+            "available": teams["available_teams"],
+            "dispatched": teams["deployed_teams"],
+        },
+    ]
+
+
+RESOURCE_STATUS: list[dict] = _build_resource_status()
  
-# Facility cards: capacity/occupied/avg_treatment match backend FACILITY_CONFIG
-# exactly (RAP 2 hrs, ADS 4 hrs, HMV 4 days, FDC 20 days); status labels use
-# the backend's own FACILITY_STATUS_* vocabulary (Operational/Busy/High
-# Load/Critical).
-FACILITY_STATUS: list[dict] = [
-    {"name": "RAP — Alpha 1", "full_name": "Regimental Aid Post", "capacity": 120,
-     "occupied": 54, "waiting": 8, "avg_treatment": "2 hrs", "status": "Operational"},
-    {"name": "ADS — Bravo 2", "full_name": "Advanced Dressing Station", "capacity": 100,
-     "occupied": 82, "waiting": 15, "avg_treatment": "4 hrs", "status": "High Load"},
-    {"name": "HMV — Delta 9", "full_name": "Hospital Medical Unit", "capacity": 300,
-     "occupied": 294, "waiting": 22, "avg_treatment": "4 days", "status": "Critical"},
-    {"name": "FDC — Foxtrot 3", "full_name": "Field/Base Hospital", "capacity": 300,
-     "occupied": 100, "waiting": 2, "avg_treatment": "20 days", "status": "Operational"},
-]
+# Facility cards: live from facilities_service (Phase 6B.1).
+# Rebuilt on every render() call, same pattern as RESOURCE_STATUS.
+
+def _build_facility_status() -> list[dict]:
+    return [
+        {
+            "name": facility["facility_type"],
+            "full_name": facility["name"],
+            "capacity": facility["capacity"],
+            "occupied": facility["occupied"],
+            "waiting": facility["queue"],
+            "avg_treatment": facility["avg_treatment"],
+            "status": facility["status"],
+        }
+        for facility in facilities_service.get_facility_overview()
+    ]
+
+
+FACILITY_STATUS: list[dict] = []
  
-AI_RECOMMENDATION: dict = {
-    "recommendation": "Redirect serious casualties from HMV — Delta 9 to ADS — Bravo 2.",
-    "reason": (
-        "HMV — Delta 9 occupancy has reached 98% with 22 personnel in the "
-        "waiting queue; continued inflow risks treatment delay beyond "
-        "acceptable thresholds."
-    ),
-    "expected_benefit": (
-        "Reduces HMV waiting queue by an estimated 30% within the next "
-        "reporting cycle while maintaining treatment continuity for "
-        "incoming casualties."
-    ),
-    "confidence": 87,
-}
+def _build_ai_recommendation() -> dict:
+    return ai_service.get_ai_recommendation()
+
+
+AI_RECOMMENDATION: dict = {}
  
 # Live Mission Log entries — newest first. Categories match the set
 # required by spec (and the backend's mission_log.py category constants).
@@ -316,28 +361,61 @@ def _inline_status_html(text: str, color: str) -> str:
 def _get_current_tick() -> int:
     return st.session_state.get("simulation_tick", 0)
  
- 
+def _run_pending_tick() -> None:
+    clock = st.session_state["sim_clock"]
+
+    if not clock.is_running:
+        return
+
+    controller = st.session_state["sim_controller"]
+    new_entries = controller.run_tick()
+
+    print(f"TICK = {st.session_state['simulation_tick']}")
+    print(f"NEW ENTRIES = {len(new_entries)}")
+    print(new_entries)
+
+    if new_entries:
+        st.session_state["mission_log"].extend(new_entries)
+
+    st.session_state["simulation_tick"] += 1
+
 def _render_status_button_row() -> None:
     """Start / Pause / Resume / Reset as one 4-across row — the command strip is wide enough now that this no longer wraps."""
+    clock = st.session_state["sim_clock"]
     status = st.session_state["simulation_status"]
+
     labels_and_keys = [
         ("▶ Start", "simulation_ctrl_start", "Running"),
         ("⏸ Pause", "simulation_ctrl_pause", "Paused"),
         ("↻ Resume", "simulation_ctrl_resume", "Running"),
         ("⟳ Reset", "simulation_ctrl_reset", "Stopped"),
     ]
+
     columns = st.columns(4, gap="small")
+
     for column, (label, key, target_status) in zip(columns, labels_and_keys):
         with column:
             button = primary_button if status == target_status else secondary_button
+
             if button(label, key=key):
 
                 if label == "⟳ Reset":
+                    crud.reset_simulation_data()
+                    clock.reset()
+
+                    st.session_state["sim_controller"] = (
+                        SimulationController(clock)
+                    )
+
                     st.session_state["simulation_status"] = "Stopped"
                     st.session_state["simulation_speed"] = 1
+                    clock.set_speed(1)
+
                     st.session_state["simulation_tick"] = 0
                     st.session_state["manual_incident_counter"] = 0
                     st.session_state["last_manual_incident"] = None
+
+                    st.session_state["mission_log"].clear()
 
                     if "tactical_map_reset_counter" in st.session_state:
                         st.session_state["tactical_map_reset_counter"] += 1
@@ -345,11 +423,18 @@ def _render_status_button_row() -> None:
                 else:
                     st.session_state["simulation_status"] = target_status
 
+                    if target_status == "Running":
+                        clock.start()
+
+                    elif target_status == "Paused":
+                        clock.pause()
+
                 st.rerun()
  
  
 def _render_speed_button_row() -> None:
     """1x / 2x / 5x / 10x as one 4-across row (SIM_SPEEDS has exactly 4 entries, so this is a single row)."""
+    clock = st.session_state["sim_clock"]
     selected_speed = st.session_state["simulation_speed"]
     columns = st.columns([1,1,1,1], gap="small")
     for column, speed in zip(columns, SIM_SPEEDS):
@@ -357,6 +442,7 @@ def _render_speed_button_row() -> None:
             button = primary_button if speed == selected_speed else secondary_button
             if button(f"{speed}x", key=f"simulation_ctrl_speed_{speed}"):
                 st.session_state["simulation_speed"] = speed
+                clock.set_speed(speed)
                 st.rerun()
  
  
@@ -371,13 +457,17 @@ def _render_simulation_controls() -> None:
     row, and Speed/Seed now share one tightened row instead of each
     getting its own labeled block.
     """
+    clock = st.session_state["sim_clock"]
+    elapsed_str = str(
+        clock.current_time - clock.start_time
+    ).split(".")[0]
     status = st.session_state["simulation_status"]
     status_color = {"Running": "primary", "Paused": "warning", "Stopped": "danger"}.get(status, "info")
     status_html = _inline_status_html(status.upper(), status_color)
     st.markdown(
         f'STATUS&nbsp;{status_html}'
         f'&nbsp;&nbsp;·&nbsp;&nbsp;TICK&nbsp;<b>{_get_current_tick()}</b>'
-        f'&nbsp;&nbsp;·&nbsp;&nbsp;ELAPSED&nbsp;<b>{html.escape(ELAPSED_TIME)}</b>',
+        f'&nbsp;&nbsp;·&nbsp;&nbsp;ELAPSED&nbsp;<b>{html.escape(elapsed_str)}</b>',
         unsafe_allow_html=True,
     )
  
@@ -406,20 +496,26 @@ def _render_incident_type_buttons() -> None:
  
  
 def _handle_generate_incident_click() -> None:
-    """
-    UI-only placeholder handler for the Generate Incident button.
- 
-    Updates session_state so the panel visually acknowledges the action —
-    it does not touch the Mission Log and does not call any backend or
-    simulation engine. Kept as its own function (rather than inline in the
-    render path) so backend integration later is a matter of adding real
-    event-generation logic here, without changing how the button or panel
-    are laid out.
-    """
+    incident_type = st.session_state["manual_incident_type"]
+    casualty_count = st.session_state["manual_casualty_count"]
+
+    controller = st.session_state["sim_controller"]
+
+    new_entries = controller.trigger_manual_incident(
+        event_type=incident_type,
+        casualty_count=casualty_count,
+    )
+
+    if new_entries:
+        st.session_state["mission_log"].extend(new_entries)
+
+    global RESOURCE_STATUS
+    RESOURCE_STATUS = _build_resource_status()
+
     st.session_state["manual_incident_counter"] += 1
     st.session_state["last_manual_incident"] = {
-        "type": st.session_state["manual_incident_type"],
-        "casualties": st.session_state["manual_casualty_count"],
+        "type": incident_type,
+        "casualties": casualty_count,
         "sequence": st.session_state["manual_incident_counter"],
     }
  
@@ -531,7 +627,7 @@ def _resource_summary_html(resource: dict, is_last: bool) -> str:
     label, color = _readiness_status(resource["available"], total)
     status_span = _inline_status_html(label, color)
     name_html = html.escape(f"{resource['icon']} {resource['name']}")
-    stats_html = html.escape(
+    stats_html = (
         f"Available: {resource['available']}<br>"
         f"Dispatched: {resource['dispatched']}"
     )
@@ -636,11 +732,38 @@ def _render_ai_recommendation() -> None:
  
  
 def _get_filtered_mission_log_entries() -> list[dict]:
-    """Shared filter logic for both the panel's toolbar count and its rendered feed — one source of truth per render."""
-    selected_filter = st.session_state.get("simulation_mission_log_filter", "All")
+    """
+    Shared filter logic for both the panel's toolbar count and its rendered feed.
+    """
+
+    selected_filter = st.session_state.get(
+        "simulation_mission_log_filter",
+        "All",
+    )
+
+    mission_log = st.session_state.get(
+        "mission_log",
+        []
+    )
+
+    entries = []
+
+    for entry in reversed(mission_log):
+        entries.append(
+            {
+                "time": entry.timestamp,
+                "category": entry.category,
+                "description": entry.message,
+            }
+        )
+
     return [
-        entry for entry in MISSION_LOG_ENTRIES
-        if selected_filter == "All" or entry["category"] == selected_filter
+        entry
+        for entry in entries
+        if (
+            selected_filter == "All"
+            or entry["category"] == selected_filter
+        )
     ]
  
  
@@ -825,7 +948,23 @@ def render() -> None:
     operational feed doesn't visually compete with the map above it.
     Region 6 — alert ribbon: the Bottom Alert Bar, full width, last.
     """
+    global RESOURCE_STATUS, FACILITY_STATUS, CURRENT_OPERATION, AI_RECOMMENDATION
+
     _init_session_state()
+    _run_pending_tick()
+
+    RESOURCE_STATUS = _build_resource_status()
+    FACILITY_STATUS = _build_facility_status()
+    CURRENT_OPERATION = _build_current_operation()
+    AI_RECOMMENDATION = _build_ai_recommendation()
+
+    clock = st.session_state["sim_clock"]
+
+    if clock.is_running:
+        st_autorefresh(
+            interval=TICK_INTERVAL_MS,
+            key="simulation_autorefresh",
+        )
  
     controls_col, incident_col = st.columns(COMMAND_STRIP_RATIO)
     with controls_col:

@@ -508,6 +508,17 @@ def get_all_queues() -> list[QueueEntry]:
     with get_connection() as conn:
         rows = conn.execute("SELECT * FROM Waiting_Queue ORDER BY arrival_time").fetchall()
     return [QueueEntry.from_row(r) for r in rows]
+
+def update_queue_waiting_time(queue_id: int, waiting_time: int) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE Waiting_Queue
+            SET waiting_time = ?
+            WHERE queue_id = ?
+            """,
+            (waiting_time, queue_id),
+        )
  
  
 # ==========================================================================
@@ -710,3 +721,104 @@ def count_dispatched_teams_for_facility(facility_id: int) -> int:
         ).fetchone()
 
     return row[0] if row else 0
+
+def get_treatments_for_casualty(casualty_id: str) -> list[Treatment]:
+    """
+    All Treatment rows for one casualty, most recent (by treatment_start)
+    first.
+
+    Added to support per-patient treatment history lookups (e.g. the
+    Patients page's "Current Treatment" panel) — no existing function
+    provided this: insert_treatment()/complete_treatment() only write,
+    and get_due_treatments()/get_due_return_to_duty() are tick-scoped
+    bulk queries across all casualties, not a per-casualty lookup.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM Treatments WHERE casualty_id = ? ORDER BY treatment_start DESC",
+            (casualty_id,),
+        ).fetchall()
+    return [Treatment.from_row(r) for r in rows]
+
+# ==========================================================================
+# SIMULATION RESET
+# ==========================================================================
+
+def reset_simulation_data() -> None:
+    """
+    Reset all runtime simulation data so every app start begins from a
+    completely fresh battlefield state.
+
+    Infrastructure tables (Facilities, Beds, Resources) are preserved and
+    merely reset to their default states.
+    """
+    with get_connection() as conn:
+
+        # ----------------------------------------------------------
+        # IMPORTANT:
+        # Clear foreign-key references FIRST.
+        # Ambulances and Helicopters reference Casualties.
+        # ----------------------------------------------------------
+        conn.execute(
+            """
+            UPDATE Ambulances
+            SET
+                status = 'Available',
+                assigned_casualty = NULL,
+                release_time = NULL
+            """
+        )
+
+        conn.execute(
+            """
+            UPDATE Helicopters
+            SET
+                status = 'Available',
+                assigned_casualty = NULL,
+                release_time = NULL
+            """
+        )
+
+        # ----------------------------------------------------------
+        # Now it is safe to delete runtime data.
+        # ----------------------------------------------------------
+        conn.execute("DELETE FROM Treatments")
+        conn.execute("DELETE FROM Waiting_Queue")
+        conn.execute("DELETE FROM Casualties")
+        conn.execute("DELETE FROM Incidents")
+
+        # Reset beds
+        conn.execute(
+            """
+            UPDATE Beds
+            SET
+                status = 'Available',
+                current_casualty = NULL,
+                occupied_since = NULL,
+                expected_release_time = NULL
+            """
+        )
+
+        # Reset facilities
+        conn.execute(
+            """
+            UPDATE Facilities
+            SET
+                occupied_beds = 0,
+                available_beds = capacity,
+                queue_length = 0,
+                facility_status = 'Operational'
+            """
+        )
+
+        # Reset medical teams
+        conn.execute(
+            """
+            UPDATE Medical_Teams
+            SET
+                status = 'Available',
+                assigned_facility = NULL
+            """
+        )
+
+        conn.commit()

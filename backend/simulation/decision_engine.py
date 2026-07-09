@@ -71,7 +71,10 @@ def process_casualty(
     arrival_time_str = draft.arrival_time.strftime("%Y-%m-%d %H:%M")
 
     evacuation_mode, resource_id, transit_minutes = resource_manager.dispatch_transport(
-        severity=draft.severity, clock=clock, rng=rng
+        severity=draft.severity,
+        clock=clock,
+        casualty_arrival_time=draft.arrival_time,
+        rng=rng,
     )
     evacuation_arrival = draft.arrival_time + timedelta(minutes=transit_minutes)
     evacuation_arrival_str = evacuation_arrival.strftime("%Y-%m-%d %H:%M")

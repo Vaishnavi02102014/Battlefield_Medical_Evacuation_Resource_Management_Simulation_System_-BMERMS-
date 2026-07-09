@@ -18,11 +18,10 @@ import streamlit as st
  
 from components.metric_card import metric_card
 from components.panel import panel
-from data.facilities_mock_data import (
+from services.facilities_service import (
     get_facility_overview,
     get_facility_detail,
     get_kpi_summary,
-    STATUS_COLOR,
 )
  
 OVERVIEW_TABLE_HEIGHT_PX = 240

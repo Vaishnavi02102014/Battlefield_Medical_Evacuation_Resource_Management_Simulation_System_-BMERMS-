@@ -26,105 +26,18 @@ import plotly.graph_objects as go
  
 from components.metric_card import metric_card
 from components.panel import panel
+from services.resources_service import (
+    get_fleet_status,
+    get_medical_team_status,
+    get_resource_summary,
+    get_dispatch_history,
+    get_resource_availability,
+)
  
 FLEET_PANEL_HEIGHT_PX = 180
 TEAM_PANEL_HEIGHT_PX = 180
 CHART_PANEL_HEIGHT_PX = 300
- 
- 
-# --------------------------------------------------------------------------
-# MOCK DATA LAYER — hardcoded today; each function's return shape mirrors
-# what a real backend call would return (Ambulance/Helicopter/MedicalTeam
-# fields per models.py) so swapping the body for crud.get_...()/
-# resource_manager.get_...() later requires no caller changes.
-# --------------------------------------------------------------------------
- 
-def get_fleet_status() -> dict:
-    """Vehicle fleet counts, mirroring Ambulance.status/Helicopter.status ('Available' | 'Dispatched')."""
-    return {
-        "ambulances": {"available": 12, "dispatched": 8},
-        "helicopters": {"available": 3, "dispatched": 3},
-    }
- 
- 
-def get_medical_team_status() -> dict:
-    """Mirrors MedicalTeam.status and assigned_facility."""
-    return {
-        "available_teams": 7,
-        "deployed_teams": 5,
-        "facilities_supported": 3,
-    }
- 
- 
-def get_resource_summary() -> dict:
-    """
-    Aggregate counts for the KPI row. resource_utilization_percent is
-    computed from get_fleet_status()/get_medical_team_status() rather than
-    hardcoded, so it stays consistent with whatever those return.
-    """
-    fleet = get_fleet_status()
-    teams = get_medical_team_status()
- 
-    total_ambulances = fleet["ambulances"]["available"] + fleet["ambulances"]["dispatched"]
-    total_helicopters = fleet["helicopters"]["available"] + fleet["helicopters"]["dispatched"]
-    total_medical_teams = teams["available_teams"] + teams["deployed_teams"]
- 
-    total_units = total_ambulances + total_helicopters + total_medical_teams
-    dispatched_units = fleet["ambulances"]["dispatched"] + fleet["helicopters"]["dispatched"] + teams["deployed_teams"]
-    utilization_percent = round((dispatched_units / total_units) * 100) if total_units else 0
- 
-    return {
-        "total_ambulances": total_ambulances,
-        "available_ambulances": fleet["ambulances"]["available"],
-        "total_helicopters": total_helicopters,
-        "available_helicopters": fleet["helicopters"]["available"],
-        "total_medical_teams": total_medical_teams,
-        "available_medical_teams": teams["available_teams"],
-        "deployed_medical_teams": teams["deployed_teams"],
-        "resource_utilization_percent": utilization_percent,
-    }
- 
- 
-def get_dispatch_history() -> list[dict]:
-    """Realistic mock dispatch timeline — one entry per hour, resource counts dispatched that hour."""
-    return [
-        {"time": "06:00", "ambulances": 1, "helicopters": 0, "medical_teams": 0},
-        {"time": "07:00", "ambulances": 2, "helicopters": 1, "medical_teams": 0},
-        {"time": "08:00", "ambulances": 3, "helicopters": 1, "medical_teams": 1},
-        {"time": "09:00", "ambulances": 2, "helicopters": 2, "medical_teams": 1},
-        {"time": "10:00", "ambulances": 4, "helicopters": 1, "medical_teams": 2},
-        {"time": "11:00", "ambulances": 3, "helicopters": 0, "medical_teams": 1},
-        {"time": "12:00", "ambulances": 2, "helicopters": 1, "medical_teams": 0},
-    ]
- 
- 
-def get_resource_availability() -> list[dict]:
-    """
-    Compact available/total per resource pool, derived from
-    get_fleet_status()/get_medical_team_status() (not a separate hardcoded
-    set) so it always agrees with those.
-    """
-    fleet = get_fleet_status()
-    teams = get_medical_team_status()
-    return [
-        {
-            "label": "Ambulances",
-            "available": fleet["ambulances"]["available"],
-            "total": fleet["ambulances"]["available"] + fleet["ambulances"]["dispatched"],
-        },
-        {
-            "label": "Helicopters",
-            "available": fleet["helicopters"]["available"],
-            "total": fleet["helicopters"]["available"] + fleet["helicopters"]["dispatched"],
-        },
-        {
-            "label": "Medical Teams",
-            "available": teams["available_teams"],
-            "total": teams["available_teams"] + teams["deployed_teams"],
-        },
-    ]
- 
- 
+
 # --------------------------------------------------------------------------
 # RENDERING
 # --------------------------------------------------------------------------
@@ -283,6 +196,9 @@ def _render_resource_allocation() -> None:
     colors = ["#3ddc84", "#f2b84b", "#7aa7ff"]
  
     with st.container(height=CHART_PANEL_HEIGHT_PX, border=False):
+        if sum(values) == 0:
+            st.caption("No resources currently deployed.")
+            return
         figure = go.Figure(data=[go.Pie(
             labels=labels, values=values, hole=0.65,
             marker=dict(colors=colors, line=dict(color="#0B1522", width=2)),

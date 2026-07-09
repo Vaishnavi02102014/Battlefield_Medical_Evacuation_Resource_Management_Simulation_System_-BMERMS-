@@ -20,38 +20,32 @@ import streamlit as st
 from components.metric_card import metric_card
 from components.panel import panel
 from components.buttons import primary_button
+from services import dashboard_service
  
-KPI_CARDS = [
-    {"title": "Total Soldiers", "value": 1250, "icon": "■", "color": "info"},
-    {"title": "In Treatment", "value": 780, "icon": "■", "color": "warning"},
-    {"title": "Waiting in Queue", "value": 150, "icon": "■", "color": "warning"},
-    {"title": "Recovered", "value": 320, "icon": "■", "color": "primary"},
-    {"title": "Returned to Duty", "value": 210, "icon": "■", "color": "primary"},
-    {"title": "Active Incidents", "value": 3, "icon": "■", "color": "danger"},
+KPI_CARD_META = [
+    ("total_casualties_processed", "Total Casualties Processed", "■", "info"),
+    ("in_treatment", "In Treatment", "■", "warning"),
+    ("waiting_in_queue", "Waiting in Queue", "■", "warning"),
+    ("recovered", "Recovered", "■", "primary"),
+    ("returned_to_duty", "Returned to Duty", "■", "primary"),
+    ("active_incidents", "Active Incidents", "■", "danger"),
 ]
  
-EVACUATION_WORKFLOW = [
-    {"name": "Battlefield", "icon": "◉", "endpoint": True, "subtitle": "Incident Source"},
-    {"name": "RAP", "icon": "✚", "occupancy": "58 / 100"},
-    {"name": "ADS", "icon": "✚", "occupancy": "180 / 300"},
-    {"name": "HMV", "icon": "✚", "occupancy": "190 / 300"},
-    {"name": "FDC", "icon": "✚", "occupancy": "205 / 300"},
-    {"name": "Recovery", "icon": "★", "endpoint": True, "subtitle": "Returned To Duty"},
-]
- 
-MISSION_LOG_ENTRIES = [
-    {"time": "09:45", "icon": "►", "category": "Dispatch", "description": "Helicopter H-02 dispatched to Sector Bravo"},
-    {"time": "09:32", "icon": "✚", "category": "Admission", "description": "CAS-017 admitted to RAP"},
-    {"time": "09:18", "icon": "▲", "category": "Incident", "description": "Mortar attack reported in Sector Alpha"},
-    {"time": "09:05", "icon": "✓", "category": "Recovery", "description": "CAS-004 recovered"},
-    {"time": "08:57", "icon": "◆", "category": "Resource", "description": "Medical Team Alpha deployed"},
-]
- 
-ASSET_INVENTORY = [
-    {"name": "Ambulances", "icon": "◈", "available": 14, "busy": 6, "maintenance": 2},
-    {"name": "Helicopters", "icon": "△", "available": 4, "busy": 2, "maintenance": 1},
-    {"name": "Medical Teams", "icon": "✚", "available": 10, "busy": 6, "maintenance": 0},
-]
+WORKFLOW_START_STAGE = {
+    "name": "Battlefield",
+    "icon": "◉",
+    "endpoint": True,
+    "subtitle": "Incident Source",
+}
+
+WORKFLOW_END_STAGE = {
+    "name": "Recovery",
+    "icon": "★",
+    "endpoint": True,
+    "subtitle": "Returned To Duty",
+}
+
+FACILITY_STAGE_ICON = "✚"
  
 AI_RECOMMENDATION = {
     "priority": "HIGH",
@@ -61,14 +55,16 @@ AI_RECOMMENDATION = {
 }
  
 def _render_kpi_row():
-    cols = st.columns(len(KPI_CARDS))
-    for col, card in zip(cols, KPI_CARDS):
+    summary = dashboard_service.get_kpi_summary()
+    cols = st.columns(len(KPI_CARD_META))
+
+    for col, (key, title, icon, color) in zip(cols, KPI_CARD_META):
         with col:
             metric_card(
-                title=card["title"],
-                value=card["value"],
-                icon=card["icon"],
-                color=card["color"],
+                title=title,
+                value=summary.get(key, 0),
+                icon=icon,
+                color=color,
             )
  
 def _render_workflow_stage(stage):
@@ -106,18 +102,40 @@ def _render_workflow_stage(stage):
     )
  
 def _render_evacuation_workflow():
-    cols = st.columns([3] + [0.5, 3] * (len(EVACUATION_WORKFLOW) - 1))
+    facility_stages = dashboard_service.get_evacuation_workflow()
+
+    stages = [WORKFLOW_START_STAGE]
+
+    for facility_stage in facility_stages:
+        stages.append(
+            {
+                "name": facility_stage["name"],
+                "icon": FACILITY_STAGE_ICON,
+                "occupancy": facility_stage["occupancy_label"],
+            }
+        )
+
+    stages.append(WORKFLOW_END_STAGE)
+
+    cols = st.columns([3] + [0.5, 3] * (len(stages) - 1))
+
     idx = 0
     for i, col in enumerate(cols):
         with col:
             if i % 2 == 0:
-                _render_workflow_stage(EVACUATION_WORKFLOW[idx])
+                _render_workflow_stage(stages[idx])
                 idx += 1
             else:
                 st.markdown("➜")
  
 def _render_mission_log():
-    for i, entry in enumerate(MISSION_LOG_ENTRIES):
+    entries = dashboard_service.get_mission_log(limit=5)
+
+    if not entries:
+        st.caption("No recent activity.")
+        return
+
+    for i, entry in enumerate(entries):
         st.markdown(
             f"""
             <span style='color:#8B97A5'>[{entry["time"]}]</span>
@@ -125,8 +143,10 @@ def _render_mission_log():
             """,
             unsafe_allow_html=True,
         )
+
         st.caption(entry["description"])
-        if i < len(MISSION_LOG_ENTRIES) - 1:
+
+        if i < len(entries) - 1:
             st.divider()
  
 def _render_battlefield_map():
@@ -153,7 +173,7 @@ def _render_asset_row(resource):
             col.markdown(f"**{resource[key]}**")
  
 def _render_asset_inventory():
-    for r in ASSET_INVENTORY:
+    for r in dashboard_service.get_asset_inventory():
         _render_asset_row(r)
  
 def _render_ai_recommendation():
