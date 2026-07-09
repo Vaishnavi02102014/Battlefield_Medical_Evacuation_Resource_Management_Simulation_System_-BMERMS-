@@ -1,0 +1,627 @@
+/*
+  theme.css
+  ---------
+  The ONLY stylesheet in the application. No page or component should
+  define its own colors, spacing, or fonts outside of what's declared here.
+  Everything is expressed as CSS custom properties (variables) so a single
+  change here updates the whole app consistently.
+ 
+  Font note (offline requirement): this app must run with no internet
+  access, so we do not load Inter from Google Fonts CDN. The stack below
+  lists Inter first so it is used automatically if the person has it
+  installed system-wide or if .woff2 files are later dropped into
+  assets/fonts/ and registered via the @font-face block below (currently
+  commented out because no font files ship with this foundation). Until
+  then, the stack falls back to each OS's native UI font, which is visually
+  very close to Inter (they share the same "grotesque sans" DNA).
+*/
+ 
+:root {
+    --color-background: #0B1522;
+    --color-sidebar: #0D1723;
+    --color-card: #172635;
+    --color-border: #2B4154;
+ 
+    --color-primary: #8FBC6B;
+    --color-primary-hover: #A7D887;
+ 
+    --color-danger: #D9534F;
+    --color-warning: #F2B94B;
+    --color-info: #6EA8FE;
+ 
+    --color-text-primary: #F4F6F8;
+    --color-text-secondary: #AEBBC7;
+ 
+    --radius: 10px;
+    --card-padding: 16px;
+ 
+    --sidebar-width: 240px;
+    --header-height: 72px;
+ 
+    --font-family:
+        "Inter",
+        "Segoe UI",
+        Roboto,
+        Helvetica,
+        Arial,
+        sans-serif;
+}
+ 
+/*
+  To ship true Inter offline, add woff2 files under assets/fonts/ and
+  uncomment this block (adjust paths/weights to match the files provided):
+ 
+  @font-face {
+    font-family: "Inter";
+    src: url("fonts/Inter-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Inter";
+    src: url("fonts/Inter-SemiBold.woff2") format("woff2");
+    font-weight: 600;
+    font-display: swap;
+  }
+*/
+ 
+/* ---------------------------------------------------------------------- */
+/* GLOBAL                                                                  */
+/* ---------------------------------------------------------------------- */
+ 
+html,
+body,
+.stApp {
+    background: var(--color-background);
+    color: var(--color-text-primary);
+    font-family: var(--font-family);
+}
+ 
+body {
+    overflow-x: hidden;
+}
+ 
+/*
+  Layout fix: .medevac-header is now position:fixed (see the HEADER BAR
+  section below) so it can sit above both the sidebar and the main content
+  without being pushed around by either one's own scrolling. Because a
+  fixed element is removed from normal document flow, the main content
+  needs its own top offset equal to the header's height so the fixed
+  header never overlaps the first row of dashboard content. The original
+  1rem top padding is preserved on top of that offset — only the header
+  clearance is new.
+*/
+.block-container {
+    padding-top: calc(var(--header-height) + 1rem);
+    padding-left: 1.8rem;
+    padding-right: 1.8rem;
+    padding-bottom: 1rem;
+    max-width: 100%;
+}
+ 
+/*
+  Hide default Streamlit chrome that doesn't fit a command-center UI.
+  IMPORTANT: only `visibility: hidden` is used here, NOT `height: 0`.
+  header[data-testid="stHeader"] is Streamlit's own native top header,
+  which hosts Streamlit's native sidebar show/hide control (visible as the
+  "«" arrow in Streamlit's default UI). Our custom .medevac-header below
+  is a separate, position:fixed element that only replaces its
+  *appearance* — collapsing the native header's height to 0 removed the
+  box that control lives in from layout entirely, which is what made the
+  sidebar disappear whenever this stylesheet was active. visibility:hidden
+  hides it visually (our own fixed header sits on top of the same area
+  anyway) while preserving whatever layout Streamlit computes from it.
+*/
+#MainMenu, footer {
+  visibility: hidden;
+  height: 0;
+}
+ 
+header[data-testid="stHeader"] {
+  visibility: hidden;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* SIDEBAR SHELL                                                           */
+/* ---------------------------------------------------------------------- */
+ 
+/*
+  Fixed, non-collapsible sidebar.
+ 
+  Streamlit 1.51.0 compatibility note (verified against Streamlit's own
+  GitHub repo, not assumed): Streamlit's sidebar show/hide state is tracked
+  via an `aria-expanded="true"/"false"` attribute on
+  section[data-testid="stSidebar"], toggled by Streamlit's own JS — this is
+  documented in Streamlit's own examples and confirmed by Streamlit's PR
+  #11861 ("No more sidebar flickering when initial_sidebar_state=
+  'collapsed'"), which shows Streamlit's internal collapsed/expanded state
+  initializes independently of our CSS and is corrected by a JS effect
+  after first render. Streamlit's own native stylesheet rules that key off
+  `[aria-expanded="..."]` carry HIGHER CSS specificity (two attribute
+  selectors) than our previous rule (`section[data-testid="stSidebar"]`,
+  one attribute selector). Since both can carry !important, ties are
+  broken by specificity — meaning Streamlit's own aria-expanded-qualified
+  rule could win regardless of injection order, regardless of what our
+  unqualified rule says. The fix is to explicitly match (and thereby
+  override) BOTH aria-expanded states with equal-or-higher specificity,
+  and to explicitly reset `transform`/`margin-left`, since Streamlit's
+  native collapse mechanism typically uses one of those (not just `width`)
+  to hide the sidebar.
+ 
+  Header-overlap fix: the header-height clearance now lives HERE, on the
+  outer sidebar section itself, instead of only on its inner content div.
+  Previously only the inner div was pushed down by the header's height,
+  which left the sidebar SECTION's own background/border box still
+  starting at the very top of the viewport (y:0) — sitting underneath the
+  fixed header in that region rather than beginning below it. Moving the
+  offset to the section itself, and capping its height to match, makes the
+  sidebar's own box start exactly at the header's bottom edge with no
+  overlap, and removes the need for any z-index contest with the header.
+*/
+section[data-testid="stSidebar"],
+section[data-testid="stSidebar"][aria-expanded="true"],
+section[data-testid="stSidebar"][aria-expanded="false"]{
+    background: var(--color-sidebar);
+    border-right:1px solid var(--color-border);
+    width: var(--sidebar-width) !important;
+    min-width: var(--sidebar-width) !important;
+    flex-shrink: 0;
+    transform: none !important;
+    margin-left: 0 !important;
+    margin-top: var(--header-height) !important;
+    height: calc(100vh - var(--header-height)) !important;
+    visibility: visible !important;
+}
+ 
+/*
+  Removes Streamlit's native sidebar collapse arrow ("«"). It served no
+  purpose in this static, non-collapsible sidebar and was adding extra
+  height above the nav items. data-testid="stSidebarCollapseButton" is the
+  current test id as of Streamlit 1.38+ (confirmed via Streamlit's GitHub
+  issue tracker); data-testid="collapsedControl" is kept alongside it for
+  compatibility with older Streamlit versions, harmless if absent.
+*/
+section[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"],
+section[data-testid="stSidebar"] [data-testid="collapsedControl"] {
+    display: none;
+}
+ 
+/*
+  Sidebar content padding. No longer carries the header-height clearance
+  (that moved to the section rule above), so this is now just the modest,
+  fixed top padding requested — the nav items start close to the top of
+  the (already header-cleared) sidebar box, not touching its edge. Targets
+  both the positional direct child (kept for backward compatibility with
+  older Streamlit versions) AND the stable
+  data-testid="stSidebarUserContent" wrapper that Streamlit has used
+  internally since 2023 (streamlit/streamlit PR #7297) — using both
+  ensures this lands on the correct element regardless of exactly how many
+  structural wrapper divs Streamlit 1.51.0 nests between stSidebar and the
+  actual user content.
+*/
+section[data-testid="stSidebar"] > div,
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"]{
+    background: var(--color-sidebar);
+    padding:18px 14px;
+}
+ 
+section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 2rem);
+}
+ 
+.medevac-sidebar-brand{
+    display:flex;
+    align-items:center;
+    gap:10px;
+ 
+    padding-bottom:16px;
+    margin-bottom:18px;
+ 
+    border-bottom:1px solid var(--color-border);
+}
+ 
+.medevac-sidebar-brand img{
+    display:none;
+}
+ 
+.medevac-sidebar-brand-name{
+    font-size:20px;
+    font-weight:700;
+    color:white;
+}
+ 
+.medevac-sidebar-brand-sub{
+    font-size:12px;
+    color:var(--color-text-secondary);
+}
+ 
+ 
+ 
+/* ---------------------------------------------------------------------- */
+/* NAVIGATION ITEMS                                                        */
+/* Streamlit buttons can't take custom classes, so an invisible marker div */
+/* placed immediately before a button is targeted via the adjacent-sibling */
+/* selector. This is the one reliable, version-stable way to theme         */
+/* individual st.button widgets differently from one another.             */
+/* ---------------------------------------------------------------------- */
+ 
+section[data-testid="stSidebar"] button{
+ 
+    background:transparent;
+ 
+    border:none;
+ 
+    border-radius:6px;
+ 
+    color:var(--color-text-secondary);
+ 
+    height:42px;
+ 
+    padding-left:16px;
+ 
+    justify-content:flex-start;
+ 
+    transition:.2s;
+}
+ 
+ 
+section[data-testid="stSidebar"] button:hover{
+ 
+    background:#16222F;
+ 
+    color:white;
+}
+ 
+/* Active nav item (marked by .medevac-nav-active-marker immediately before it) */
+.medevac-nav-active-marker
++ div[data-testid="stButton"] button{
+ 
+    background:#1C2C3A;
+ 
+    border-left:3px solid var(--color-primary);
+ 
+    border-top:none;
+ 
+    border-right:none;
+ 
+    border-bottom:none;
+ 
+    color:white;
+ 
+    font-weight:600;
+}
+ 
+/* Emergency Response button (marked by .medevac-danger-marker immediately before it) */
+.medevac-danger-marker + div[data-testid="stButton"] button {
+  background-color: var(--color-danger);
+  color: #FFFFFF;
+  border-color: var(--color-danger);
+  font-weight: 600;
+  text-align: center;
+}
+ 
+.medevac-danger-marker + div[data-testid="stButton"] button:hover {
+  background-color: #c24741;
+  color: #FFFFFF;
+}
+ 
+.medevac-sidebar-footer-links {
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+ 
+.medevac-sidebar-footer-links a {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+ 
+.medevac-sidebar-footer-links a:hover {
+  color: var(--color-primary);
+}
+ 
+.medevac-sidebar-divider {
+  border-top: 1px solid var(--color-border);
+  margin: 12px 0;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* HEADER BAR                                                              */
+/* Fixed at the very top of the viewport, above both the sidebar and the  */
+/* main content, so it can never overlap either one as they scroll        */
+/* independently. This was previously declared with a height and flex     */
+/* layout but no `position: fixed` at all, so it rendered as a normal,    */
+/* in-flow block instead of a fixed top bar — the sidebar's own           */
+/* margin-top offset (above) had nothing to actually clear.               */
+/* This single rule replaces two separate ".medevac-header{...}" rules    */
+/* that previously appeared back to back; the second always overrode the  */
+/* first on every property they both set (background, border-radius,     */
+/* padding, margin-bottom), so consolidating them changes nothing visually*/
+/* — the values below are exactly what was already being rendered.        */
+/* ---------------------------------------------------------------------- */
+ 
+.medevac-header{
+ 
+    display:flex;
+ 
+    justify-content:space-between;
+ 
+    align-items:center;
+ 
+    background:#0F1C29;
+ 
+    border-bottom:1px solid var(--color-border);
+ 
+    border-radius:0;
+ 
+    padding:12px 24px;
+ 
+    margin-bottom:20px;
+ 
+    height:var(--header-height);
+ 
+    position:fixed;
+ 
+    top:0;
+ 
+    left:0;
+ 
+    right:0;
+ 
+    z-index:1000;
+}
+.medevac-header-left{
+ 
+    display:flex;
+ 
+    flex-direction:column;
+ 
+    justify-content:center;
+}
+ 
+.medevac-brand-title{
+ 
+    font-size:22px;
+ 
+    font-weight:700;
+ 
+    color:var(--color-primary);
+}
+ 
+.medevac-brand-subtitle{
+ 
+    font-size:12px;
+ 
+    color:var(--color-text-secondary);
+}
+ 
+.medevac-header-item {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+ 
+.medevac-header-item-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+ 
+.medevac-header-item-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+ 
+.medevac-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid currentColor;
+}
+ 
+.medevac-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+ 
+.medevac-header-right{
+ 
+    display:flex;
+ 
+    align-items:center;
+ 
+    gap:18px;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* METRIC CARD                                                            */
+/* ---------------------------------------------------------------------- */
+ 
+.medevac-metric-card{
+ 
+    background:var(--color-card);
+ 
+    border:1px solid var(--color-border);
+ 
+    border-left:5px solid var(--metric-accent);
+ 
+    border-radius:10px;
+ 
+    padding:18px;
+ 
+    transition:.2s;
+}
+ 
+.medevac-metric-card:hover{
+ 
+    transform:translateY(-2px);
+ 
+    border-color:var(--metric-accent);
+}
+ 
+.medevac-metric-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+ 
+.medevac-metric-title {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+ 
+.medevac-metric-icon {
+  font-size: 1.15rem;
+  color: var(--metric-accent, var(--color-primary));
+}
+ 
+.medevac-metric-value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.15;
+}
+ 
+.medevac-metric-subtitle {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+}
+ 
+.medevac-metric-delta {
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+ 
+.medevac-metric-delta.up { color: var(--color-primary); }
+.medevac-metric-delta.down { color: var(--color-danger); }
+.medevac-metric-delta.flat { color: var(--color-text-secondary); }
+ 
+/* ---------------------------------------------------------------------- */
+/* PANEL                                                                  */
+/* Panels are built on Streamlit's native st.container(border=True), not  */
+/* a manual <div>, because HTML opened in one st.markdown() call cannot   */
+/* reliably wrap widgets rendered by later, separate calls. This rule     */
+/* re-skins that container's own default border with our theme (see      */
+/* components/panel.py for the full explanation). This selector applies  */
+/* to EVERY bordered container in the app, which is intentional — panel()*/
+/* is meant to be the one source of "boxed" sections app-wide.            */
+/* ---------------------------------------------------------------------- */
+ 
+div[data-testid="stVerticalBlockBorderWrapper"]{
+ 
+    background:var(--color-card);
+ 
+    border:1px solid var(--color-border)!important;
+ 
+    border-radius:10px!important;
+ 
+    box-shadow:0 2px 8px rgba(0,0,0,.18);
+ 
+    margin-bottom:16px;
+}
+ 
+div[data-testid="stVerticalBlockBorderWrapper"] > div {
+  padding: var(--card-padding);
+}
+ 
+.medevac-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+ 
+.medevac-panel-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+ 
+.medevac-panel-toolbar {
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* BUTTONS (themed variants of native st.button)                          */
+/* ---------------------------------------------------------------------- */
+ 
+section.main div[data-testid="stButton"] button[kind="primary"] {
+  background-color: var(--color-primary);
+  color: #0B1522;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius);
+  font-weight: 600;
+}
+ 
+section.main div[data-testid="stButton"] button[kind="primary"]:hover {
+  background-color: #8FC97D;
+  border-color: #8FC97D;
+  color: #0B1522;
+}
+ 
+section.main div[data-testid="stButton"] button[kind="secondary"] {
+  background-color: transparent;
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-weight: 500;
+}
+ 
+section.main div[data-testid="stButton"] button[kind="secondary"]:hover {
+  border-color: var(--color-info);
+  color: var(--color-info);
+}
+ 
+/* Danger variant (marked by .medevac-danger-marker immediately before it) */
+section.main .medevac-danger-marker + div[data-testid="stButton"] button {
+  background-color: var(--color-danger);
+  color: #FFFFFF;
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius);
+  font-weight: 600;
+}
+ 
+section.main .medevac-danger-marker + div[data-testid="stButton"] button:hover {
+  background-color: #c24741;
+  border-color: #c24741;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* PROGRESS BAR                                                           */
+/* ---------------------------------------------------------------------- */
+ 
+div[data-testid="stProgressBar"] > div {
+    border-radius: 999px;
+}
+ 
+div[data-testid="stProgressBar"] div[role="progressbar"] {
+    background: var(--color-primary);
+}
+ 
+section.main > div {
+    row-gap: 1rem;
+}

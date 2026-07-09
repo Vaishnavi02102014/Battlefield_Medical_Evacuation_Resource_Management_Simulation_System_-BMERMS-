@@ -1,0 +1,32 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE files
+.vscode/
+.idea/
+
+# Streamlit cache
+.streamlit/
+
+# Test cache
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Database files (can be recreated)
+*.db
+*.sqlite3
+
+# Jupyter
+.ipynb_checkpoints/
