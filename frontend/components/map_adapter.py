@@ -19,35 +19,24 @@ Moved verbatim out of tactical_map.py -- no logic changed, no behavior
 changed. Everything below was provider/derivation code there too; only
 its file location is new.
 
-No backend imports of any kind (unchanged from before the move).
-# Visualization-only evacuation chain.
-# Routes are intentionally frontend-generated and do not require
-# backend route tables, GIS pathfinding, or route APIs.
+Backend integration status:
+
+- Facilities, incidents, casualties, resources, and evacuation routes
+  are now derived from live backend state.
+- This module remains the single provider that converts backend objects
+  into renderer-ready MapData.
+- render_tactical_map() remains completely source-agnostic.
 """
 
 from __future__ import annotations
+import logging
 import math
 import re
 from dataclasses import dataclass, field
+from backend.database import crud
 
 from components.map_constants import FRONTEND_MAP_LAYOUT
-
-# Used only when assigning severity to derived mock casualties (see
-# _derive_casualties below) — provider-only, not used by any renderer.
-CASUALTY_SEVERITY_CYCLE: list[str] = ["Critical", "Severe", "Moderate", "Minor"]
-
-# Frontend-only fallback used only if an Incident-category mission log
-# entry doesn't mention a numeric casualty count in its text.
-DEFAULT_CASUALTY_COUNT_PER_INCIDENT: int = 2
-
-# Deterministic evacuation chain (matches backend's real RAP->ADS->HMV
-# progression) with each leg's transport mode — provider-derived mock
-# values only, not a new simulation state.
-EVACUATION_CHAIN: list[dict] = [
-    {"segment": "Incident to RAP", "facility_code": "RAP", "transport_mode": "Ground"},
-    {"segment": "RAP to ADS", "facility_code": "ADS", "transport_mode": "Ground"},
-    {"segment": "ADS to HMV", "facility_code": "HMV", "transport_mode": "Air"},
-]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,7 +56,7 @@ class MapData:
     routes: list[dict] = field(default_factory=list)
  
  
-def _spread_positions(base_grid_x: float, base_grid_y: float, count: int, radius: float = 5.0) -> list[tuple[float, float]]:
+def _spread_positions(base_grid_x: float, base_grid_y: float, count: int, radius: float = 10.0) -> list[tuple[float, float]]:
     """
     Deterministic (never random) placement for `count` units around one
     staging point, so multiple units at the same facility/incident don't
@@ -88,7 +77,9 @@ def _spread_positions(base_grid_x: float, base_grid_y: float, count: int, radius
     return positions
  
  
-def _derive_incidents(mission_log_entries: list[dict]) -> list[dict]:
+def _derive_incidents(
+        incidents_db: list
+    ) -> list[dict]:
     """
     Derive incident markers from simulation.py's own MISSION_LOG_ENTRIES
     — its "Incident"-category entries — instead of maintaining a second,
@@ -103,134 +94,147 @@ def _derive_incidents(mission_log_entries: list[dict]) -> list[dict]:
     resolved. An entry that doesn't mention a known sector by name is
     skipped rather than guessed at.
     """
-    known_sectors = FRONTEND_MAP_LAYOUT["sector_anchors"].keys()
     incidents = []
-    for entry in mission_log_entries:
-        if entry.get("category") != "Incident":
-            continue
-        matched_sector = next((sector for sector in known_sectors if sector in entry["description"]), None)
-        if matched_sector is None:
-            continue
-        grid_x, grid_y = FRONTEND_MAP_LAYOUT["sector_anchors"][matched_sector]
-        # Casualty count for the popup/casualty markers: the mission log
-        # only carries prose, so the number is picked out of the existing
-        # description text (e.g. "4 casualties confirmed") with a simple
-        # pattern match rather than inventing a separate figure. Falls
-        # back to DEFAULT_CASUALTY_COUNT_PER_INCIDENT if no number is
-        # mentioned.
-        casualty_match = re.search(r"(\d+)\s+casualt", entry["description"], re.IGNORECASE)
-        casualty_count = int(casualty_match.group(1)) if casualty_match else DEFAULT_CASUALTY_COUNT_PER_INCIDENT
+
+    for incident in incidents_db:
         incidents.append({
-            "battle_sector": matched_sector,
-            "description": entry["description"],
-            "casualty_count": casualty_count,
-            "grid_x": grid_x,
-            "grid_y": grid_y,
+            "incident_id": incident.incident_id,
+            "battle_sector": incident.battle_sector,
+            "description": (
+                f"{incident.event_type} reported in "
+                f"Sector {incident.battle_sector} — "
+                f"{incident.number_of_casualties} casualties"
+            ),
+            "casualty_count": incident.number_of_casualties,
+            "grid_x": incident.grid_x,
+            "grid_y": incident.grid_y,
         })
     return incidents
  
  
-def _derive_casualties(incidents: list[dict]) -> list[dict]:
-    """
-    Minimal visualization-only casualty representation, derived here
-    inside the provider — not a second global simulation state. The mock
-    state has no individual Casualty objects, only each incident's
-    casualty_count (see _derive_incidents), so that many points are
-    plotted clustered around the incident's own location, with severity
-    assigned by cycling a fixed order (CASUALTY_SEVERITY_CYCLE) —
-    deterministic, never random. This list exists only for the duration
-    of one get_map_data() call and is not stored anywhere else; it
-    disappears entirely once backend integration supplies real Casualty
-    rows with their own grid_x/grid_y/severity.
-    """
+def _derive_casualties(
+        casualties_db: list
+) -> list[dict]:
+
+    severity_map = {
+        "Critical": "Critical",
+        "Serious": "Severe",
+        "Moderate": "Moderate",
+        "Mild": "Minor",
+    }
+
     casualties = []
-    casualty_sequence = 1
-    for incident in incidents:
-        positions = _spread_positions(
-            incident["grid_x"], incident["grid_y"], incident["casualty_count"], radius=3.5,
-        )
-        for index, (grid_x, grid_y) in enumerate(positions):
-            casualties.append({
-                "casualty_ref": f"CAS-{casualty_sequence:03d}",
-                "severity": CASUALTY_SEVERITY_CYCLE[index % len(CASUALTY_SEVERITY_CYCLE)],
-                "battle_sector": incident["battle_sector"],
-                "grid_x": grid_x,
-                "grid_y": grid_y,
-            })
-            casualty_sequence += 1
+
+    for casualty in casualties_db:
+        if casualty.status != "Being Evacuated":
+            continue
+        casualties.append({
+            "casualty_ref": casualty.casualty_id,
+            "severity": severity_map[
+                casualty.severity
+            ],
+            "battle_sector": casualty.battle_sector,
+            "grid_x": casualty.grid_x,
+            "grid_y": casualty.grid_y,
+        })
+
     return casualties
- 
- 
-def _derive_routes(incidents: list[dict]) -> list[dict]:
-    """
-    Evacuation route segments (Incident -> RAP -> ADS -> HMV), derived
-    entirely inside the provider from data already resolved here — the
-    incident's own location plus FRONTEND_MAP_LAYOUT's facility
-    positions. Not a new simulation state: EVACUATION_CHAIN is a fixed,
-    deterministic presentation of the same evacuation order the backend
-    already documents (FACILITY_ORDER), with transport mode assigned
-    per-leg, never randomly.
-    """
+
+def _derive_routes(
+    casualties_db: list,
+) -> list[dict]:
+
     routes = []
-    for incident in incidents:
-        previous_point = (incident["grid_x"], incident["grid_y"])
-        for leg in EVACUATION_CHAIN:
-            facility_name = FRONTEND_MAP_LAYOUT["facility_code_to_name"][leg["facility_code"]]
-            facility_y, facility_x = FRONTEND_MAP_LAYOUT["facility_positions"][facility_name]
-            routes.append({
-                "segment": leg["segment"],
-                "destination": facility_name,
-                "transport_mode": leg["transport_mode"],
-                "battle_sector": incident["battle_sector"],
-                "start": previous_point,
-                "end": (facility_x, facility_y),
-            })
-            previous_point = (facility_x, facility_y)
+
+    for casualty in casualties_db:
+        if casualty.status != "Being Evacuated":
+            continue
+
+        if casualty.assigned_facility is None:
+            continue
+
+        facility = FRONTEND_MAP_LAYOUT["facility_positions"]
+
+        destination = crud.get_facility_by_id(
+            casualty.assigned_facility
+        )
+
+        if destination is None:
+            logger.warning(
+                "Assigned facility_id=%r for casualty %r "
+                "does not exist. Route skipped.",
+                casualty.assigned_facility,
+                casualty.casualty_id,
+            )
+            continue
+
+        facility_position = facility.get(
+            destination.facility_code
+        )
+
+        if facility_position is None:
+            logger.warning(
+                "No tactical map coordinates found for "
+                "facility_code=%r while deriving route "
+                "for casualty %r.",
+                destination.facility_code,
+                casualty.casualty_id,
+            )
+            continue
+
+        facility_y, facility_x = facility_position
+
+        routes.append(
+            {
+                "segment": (
+                    f"{casualty.casualty_id} "
+                    f"Evacuation"
+                ),
+                "destination": destination.facility_code,
+                "transport_mode": (
+                    "Air"
+                    if casualty.evacuation_mode
+                    == "Helicopter"
+                    else "Ground"
+                ),
+                "battle_sector": casualty.battle_sector,
+                "start": (
+                    casualty.grid_x,
+                    casualty.grid_y,
+                ),
+                "end": (
+                    facility_x,
+                    facility_y,
+                ),
+            }
+        )
+
     return routes
- 
- 
+
 def _resolve_staging_point(staging_key: str, incidents: list[dict]) -> tuple[float, float]:
     """Resolve a resource_staging_points value ('RAP'/'ADS'/'FDC'/'INCIDENT') to grid (x, y)."""
     if staging_key == "INCIDENT":
         if incidents:
             return incidents[0]["grid_x"], incidents[0]["grid_y"]
         return FRONTEND_MAP_LAYOUT["center"][1], FRONTEND_MAP_LAYOUT["center"][0]
-    facility_name = FRONTEND_MAP_LAYOUT["facility_code_to_name"][staging_key]
-    facility_y, facility_x = FRONTEND_MAP_LAYOUT["facility_positions"][facility_name]
+    facility_name = FRONTEND_MAP_LAYOUT["facility_code_to_name"][
+        staging_key
+    ]
+    facility_y, facility_x = FRONTEND_MAP_LAYOUT[
+        "facility_positions"
+    ][staging_key]
     return facility_x, facility_y
+  
  
- 
-def _derive_resource_units(resource_entry: dict, call_sign_prefix: str, incidents: list[dict]) -> list[dict]:
-    """Expand one RESOURCE_STATUS entry's available/busy/returning/maintenance counts into individual, positioned units."""
-    units = []
-    unit_index = 1
-    for status_key, count in (
-        ("available", resource_entry.get("available", 0)),
-        (
-            "busy",
-            resource_entry.get(
-                "busy",
-                resource_entry.get("dispatched", 0),
-            ),
-        ),
-    ):
-        staging_key = FRONTEND_MAP_LAYOUT["resource_staging_points"].get(
-            status_key,
-            "INCIDENT",
-        )
-        base_x, base_y = _resolve_staging_point(staging_key, incidents)
-        for grid_x, grid_y in _spread_positions(base_x, base_y, count):
-            units.append({
-                "call_sign": f"{call_sign_prefix}-{unit_index:02d}",
-                "status": status_key.capitalize(),
-                "grid_x": grid_x,
-                "grid_y": grid_y,
-            })
-            unit_index += 1
-    return units
- 
- 
-def get_map_data(facility_status: list[dict], resource_status: list[dict], mission_log_entries: list[dict]) -> MapData:
+def get_map_data(
+    facility_status,
+    resource_status,
+    incidents_db,
+    casualties_db,
+    ambulances_db,
+    helicopters_db,
+    medical_teams_db,
+) -> MapData:
     """
     THE single map data provider. Packages simulation.py's existing mock
     state into one fully-resolved MapData object — the only thing
@@ -251,30 +255,145 @@ def get_map_data(facility_status: list[dict], resource_status: list[dict], missi
     """
     facilities = []
     for facility in facility_status:
-        position = FRONTEND_MAP_LAYOUT["facility_positions"].get(facility["name"])
+        position = FRONTEND_MAP_LAYOUT["facility_positions"].get(facility["facility_code"])
         if position is None:
+            logger.warning(
+                "No tactical map coordinates found for "
+                "facility_code=%r (%r). Facility will not be rendered.",
+                facility.get("facility_code"),
+                facility.get("name"),
+            )
             continue
         grid_y, grid_x = position
         facilities.append({**facility, "grid_x": grid_x, "grid_y": grid_y})
  
-    incidents = _derive_incidents(mission_log_entries)
-    casualties = _derive_casualties(incidents)
-    routes = _derive_routes(incidents)
- 
-    resource_by_name = {entry["name"]: entry for entry in resource_status}
-    ambulances = (
-        _derive_resource_units(resource_by_name["Ambulances"], "AMB", incidents)
-        if "Ambulances" in resource_by_name else []
-    )
-    helicopters = (
-        _derive_resource_units(resource_by_name["Helicopters"], "HELI", incidents)
-        if "Helicopters" in resource_by_name else []
-    )
-    medical_teams = (
-        _derive_resource_units(resource_by_name["Medical Teams"], "MED-TEAM", incidents)
-        if "Medical Teams" in resource_by_name else []
-    )
- 
+    incidents = _derive_incidents(incidents_db)
+    casualties = _derive_casualties(casualties_db)
+    routes = _derive_routes(casualties_db)
+
+    ambulances = []
+
+    for status in ["Available", "Dispatched"]:
+        units = [
+            a for a in ambulances_db
+            if a.status == status
+        ]
+
+        if not units:
+            continue
+
+        staging_key = (
+            "available"
+            if status == "Available"
+            else "busy"
+        )
+
+        base_x, base_y = _resolve_staging_point(
+            FRONTEND_MAP_LAYOUT["resource_staging_points"][staging_key],
+            incidents,
+        )
+
+        positions = _spread_positions(
+            base_x,
+            base_y,
+            len(units),
+        )
+
+        for ambulance, (grid_x, grid_y) in zip(
+            units,
+            positions,
+        ):
+            ambulances.append(
+                {
+                    "call_sign": ambulance.call_sign,
+                    "status": ambulance.status,
+                    "grid_x": grid_x,
+                    "grid_y": grid_y,
+                }
+            )
+
+    helicopters = []
+
+    for status in ["Available", "Dispatched"]:
+        units = [
+            h for h in helicopters_db
+            if h.status == status
+        ]
+
+        if not units:
+            continue
+
+        staging_key = (
+            "available"
+            if status == "Available"
+            else "busy"
+        )
+
+        base_x, base_y = _resolve_staging_point(
+            FRONTEND_MAP_LAYOUT["resource_staging_points"][staging_key],
+            incidents,
+        )
+
+        positions = _spread_positions(
+            base_x,
+            base_y,
+            len(units),
+        )
+
+        for helicopter, (grid_x, grid_y) in zip(
+            units,
+            positions,
+        ):
+            helicopters.append(
+                {
+                    "call_sign": helicopter.call_sign,
+                    "status": helicopter.status,
+                    "grid_x": grid_x,
+                    "grid_y": grid_y,
+                }
+            )
+
+    medical_teams = []
+
+    for status in ["Available", "Dispatched"]:
+        units = [
+            t for t in medical_teams_db
+            if t.status == status
+        ]
+
+        if not units:
+            continue
+
+        staging_key = (
+            "available"
+            if status == "Available"
+            else "busy"
+        )
+
+        base_x, base_y = _resolve_staging_point(
+            FRONTEND_MAP_LAYOUT["resource_staging_points"][staging_key],
+            incidents,
+        )
+
+        positions = _spread_positions(
+            base_x,
+            base_y,
+            len(units),
+        )
+
+        for team, (grid_x, grid_y) in zip(
+            units,
+            positions,
+        ):
+            medical_teams.append(
+                {
+                    "call_sign": team.team_name,
+                    "status": team.status,
+                    "grid_x": grid_x,
+                    "grid_y": grid_y,
+                }
+            )
+
     return MapData(
         facilities=facilities,
         incidents=incidents,

@@ -35,17 +35,10 @@ FRONTEND_MAP_LAYOUT: dict = {
     # Keyed by the exact `name` strings FACILITY_STATUS already uses, so
     # the provider can look positions up with no translation layer.
     "facility_positions": {
-        "RAP — Alpha 1": (18.0, 18.0),
-        "ADS — Bravo 2": (38.0, 42.0),
-        "HMV — Delta 9": (72.0, 70.0),
-        "FDC — Foxtrot 3": (85.0, 88.0),
-    },
- 
-    # Used only to plot an Incident-category mission log entry that
-    # mentions one of these sector names — see _derive_incidents().
-    "sector_anchors": {
-        "Alpha": (20.0, 3.0), "Bravo": (48.0, 28.0), "Charlie": (50.0, 2.0),
-        "Delta": (65.0, 5.0), "Echo": (80.0, 3.0), "Foxtrot": (95.0, 4.0),
+        "RAP": (18.0, 18.0),
+        "ADS": (38.0, 42.0),
+        "HMV": (72.0, 70.0),
+        "FDC": (85.0, 88.0),
     },
  
     # Which staging point each resource status category is plotted at.

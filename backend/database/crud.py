@@ -656,6 +656,27 @@ def get_resource_availability_counts() -> dict:
         "helicopters": {"available": heli_avail, "total": heli_total},
         "medical_teams": {"available": team_avail, "total": team_total},
     }
+
+def get_all_ambulances() -> list[Ambulance]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM Ambulances ORDER BY ambulance_id"
+        ).fetchall()
+    return [Ambulance.from_row(r) for r in rows]
+
+def get_all_helicopters() -> list[Helicopter]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM Helicopters ORDER BY helicopter_id"
+        ).fetchall()
+    return [Helicopter.from_row(r) for r in rows]
+
+def get_all_medical_teams() -> list[MedicalTeam]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM Medical_Teams ORDER BY team_id"
+        ).fetchall()
+    return [MedicalTeam.from_row(r) for r in rows]
  
  
 # ==========================================================================

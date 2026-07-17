@@ -227,6 +227,7 @@ def _build_facility_status() -> list[dict]:
         {
             "name": facility["facility_type"],
             "full_name": facility["name"],
+            "facility_code": facility["facility_code"],
             "capacity": facility["capacity"],
             "occupied": facility["occupied"],
             "waiting": facility["queue"],
@@ -564,7 +565,16 @@ def _render_battlefield_map() -> None:
     single resulting MapData object to the renderer — it never assembles
     map-specific data itself.
     """ 
-    map_data = get_map_data(FACILITY_STATUS, RESOURCE_STATUS, MISSION_LOG_ENTRIES)
+    map_data = get_map_data(
+        FACILITY_STATUS,
+        RESOURCE_STATUS,
+        crud.get_recent_incidents(),
+        crud.get_active_casualties(),
+        crud.get_all_ambulances(),
+        crud.get_all_helicopters(),
+        crud.get_all_medical_teams(),
+    )
+
     render_tactical_map(map_data)
  
  

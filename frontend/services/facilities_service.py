@@ -101,8 +101,9 @@ def _build_facility_record(facility) -> dict:
     facility.
 
     Field mapping:
-        name          <- facility.facility_name   (e.g. "Regimental Aid Post")
-        facility_type <- facility.facility_code    (e.g. "RAP")
+        name          <- facility.facility_code
+        facility_type <- facility.facility_name
+        facility_code <- facility.facility_code
         capacity      <- facility.capacity
         occupied      <- facility.occupied_beds
         queue         <- facility.queue_length     (already maintained by
@@ -117,11 +118,14 @@ def _build_facility_record(facility) -> dict:
     return {
         "name": facility.facility_code,
         "facility_type": facility.facility_name,
+        "facility_code": facility.facility_code,
         "capacity": facility.capacity,
         "occupied": facility.occupied_beds,
         "queue": facility.queue_length,
         "avg_treatment": _average_treatment_hours(facility.facility_id),
-        "medical_teams": crud.count_dispatched_teams_for_facility(facility.facility_id),
+        "medical_teams": crud.count_dispatched_teams_for_facility(
+            facility.facility_id
+        ),
         "status": facility.facility_status,
     }
 
