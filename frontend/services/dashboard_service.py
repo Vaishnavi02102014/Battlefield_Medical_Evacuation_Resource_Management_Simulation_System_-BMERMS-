@@ -104,6 +104,8 @@ def get_kpi_summary() -> dict:
         "recovered": stats.get("recovered", 0),
         "returned_to_duty": stats.get("returned_to_duty", 0),
         "active_incidents": stats.get("active_incidents", 0),
+        "critical_casualties": stats.get("critical_active", 0),
+        "average_waiting_minutes": stats.get("average_waiting_minutes", 0.0),
     }
 
 

@@ -37,7 +37,13 @@ import streamlit as st
  
 from components.metric_card import metric_card
 from components.panel import panel
- 
+from services import dashboard_service
+from services import facilities_service
+from services import resources_service
+from services import patients_service
+from backend.database import crud
+from backend.utils.constants import SEVERITY_LIST
+
 # --------------------------------------------------------------------------
 # CONSTANTS
 # --------------------------------------------------------------------------
@@ -72,151 +78,357 @@ TREND_ACCENT = {
  
 def _get_kpi_metrics() -> list[dict]:
     """
-    # TODO Integration:
-    # Source -> crud.get_dashboard_stats() + crud.get_resource_availability_counts()
+    Live KPI values sourced from the existing service layer.
     """
+
+    dashboard_stats = dashboard_service.get_kpi_summary()
+    facility_stats = facilities_service.get_kpi_summary()
+
+    occupied_beds = facility_stats.get("occupied_beds", 0)
+    available_beds = facility_stats.get("available_beds", 0)
+
+    total_beds = occupied_beds + available_beds
+
+    occupancy_pct = (
+        occupied_beds / total_beds * 100
+        if total_beds
+        else 0.0
+    )
+
+    avg_wait = dashboard_stats.get(
+        "average_waiting_minutes",
+        0.0,
+    )
+
     return [
-        {"title": "Total Incidents", "value": 46, "color": "danger"},
-        {"title": "Total Casualties", "value": 1250, "color": "info"},
-        {"title": "Critical Casualties", "value": 138, "color": "danger"},
-        {"title": "Avg Wait Time", "value": "...", "color": "warning"},
-        {"title": "Bed Occupancy", "value": "72%", "color": "warning"},
-        {"title": "Returned To Duty", "value": 210, "color": "primary"},
+        {
+            "title": "Active Incidents",
+            "value": dashboard_stats.get("active_incidents", 0),
+            "color": "danger",
+        },
+        {
+            "title": "Total Casualties",
+            "value": dashboard_stats.get("total_casualties_processed", 0),
+            "color": "info",
+        },
+        {
+            "title": "Critical Casualties",
+            "value": dashboard_stats.get("critical_casualties", 0),
+            "color": "danger",
+        },
+        {
+            "title": "Avg Wait Time",
+            "value": f"{avg_wait:.1f} min",
+            "color": "warning",
+        },
+        {
+            "title": "Bed Occupancy",
+            "value": f"{occupancy_pct:.0f}%",
+            "color": "warning",
+        },
+        {
+            "title": "Returned To Duty",
+            "value": dashboard_stats.get("returned_to_duty", 0),
+            "color": "primary",
+        },
     ]
   
 def _get_casualty_trend() -> dict:
     """
-    # TODO:
-    # Replace this placeholder implementation after analytics history persistence
-    # (st.session_state["analytics_history"] or Analytics_Snapshots table)
-    # is implemented in the backend.
+    Live casualty trend.
+
+    Source:
+    dashboard_service.get_kpi_summary()
+
+    Session history is maintained in
+    st.session_state["analytics_casualty_history"].
     """
-    hours = [(datetime.now() - timedelta(hours=h)).strftime("%H:00") for h in range(TREND_HOURS, 0, -1)]
+
+    stats = dashboard_service.get_kpi_summary()
+
+    snapshot = {
+        "timestamp": datetime.now(),
+        "active_incidents": stats.get("active_incidents", 0),
+        "total_casualties": stats.get("total_casualties_processed", 0),
+        "recoveries": stats.get("recovered", 0),
+        "returned_to_duty": stats.get("returned_to_duty", 0),
+    }
+
+    history = st.session_state.setdefault(
+        "analytics_casualty_history",
+        []
+    )
+
+    history.append(dict(snapshot))
+    del history[:-TREND_HOURS]
+
     return {
-        "hours": hours,
+        "hours": [
+            entry["timestamp"].strftime("%H:%M")
+            for entry in history
+        ],
         "series": {
-            "Incidents":        [1, 2, 1, 3, 2, 4, 3, 5, 4, 6, 5, 7],
-            "Casualties":       [4, 7, 5, 10, 8, 13, 11, 16, 14, 19, 17, 22],
-            "Recoveries":       [0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            "Returned To Duty": [0, 0, 1, 1, 2, 2, 3, 4, 4, 5, 6, 7],
+            "Incidents": [
+                entry["active_incidents"]
+                for entry in history
+            ],
+            "Casualties": [
+                entry["total_casualties"]
+                for entry in history
+            ],
+            "Recoveries": [
+                entry["recoveries"]
+                for entry in history
+            ],
+            "Returned To Duty": [
+                entry["returned_to_duty"]
+                for entry in history
+            ],
         },
     }
  
  
 def _get_facility_load() -> dict:
     """
-    # TODO Integration:
-    # Source -> crud.get_all_facilities() for current load. Historical
-    # trend from Treatments.treatment_start grouped by facility_id
-    # (requires one additive, read-only crud function per the Phase 1
-    # roadmap — no schema change).
+    Live Facility Load data.
+
+    Source -> facilities_service.get_facility_overview()
+
+    occupancy_pct is computed locally from occupied/capacity.
     """
-    facilities = ["RAP", "ADS", "HMV", "FDC"]
+
+    overview = facilities_service.get_facility_overview()
+
+    facilities = []
+    occupied = []
+    capacity = []
+    occupancy_pct = []
+    queue_length = []
+    deployed_teams = []
+
+    for facility in overview:
+        facilities.append(facility["name"])
+        occupied.append(facility["occupied"])
+        capacity.append(facility["capacity"])
+
+        occupancy_pct.append(
+            (
+                facility["occupied"] / facility["capacity"] * 100
+            )
+            if facility["capacity"]
+            else 0.0
+        )
+
+        queue_length.append(facility["queue"])
+        deployed_teams.append(facility["medical_teams"])
+
     return {
         "facilities": facilities,
-        "occupied": [58, 180, 190, 205],
-        "capacity": [100, 300, 300, 300],
-        "occupancy_pct": [58, 60, 63, 68],
-        "queue_length": [4, 11, 9, 14],
-        "deployed_teams": [1, 3, 2, 4],
+        "occupied": occupied,
+        "capacity": capacity,
+        "occupancy_pct": occupancy_pct,
+        "queue_length": queue_length,
+        "deployed_teams": deployed_teams,
     }
  
  
 def _get_resource_utilization() -> dict:
     """
-    # TODO Integration:
-    # Source -> crud.get_resource_availability_counts(), snapshotted each
-    # rerun into st.session_state["analytics_resource_history"] (no DB
-    # write — same session-state-only pattern Mission Log already uses).
+    Live resource utilization snapshot.
+
+    Sources:
+    - resources_service.get_fleet_status()
+    - resources_service.get_medical_team_status()
+    - facilities_service.get_kpi_summary()
     """
+
+    fleet = resources_service.get_fleet_status()
+    teams = resources_service.get_medical_team_status()
+    facility_kpis = facilities_service.get_kpi_summary()
+
+    ambulances_available = fleet["ambulances"]["available"]
+    ambulances_dispatched = fleet["ambulances"]["dispatched"]
+    ambulances_total = ambulances_available + ambulances_dispatched
+
+    ambulances_pct = (
+        ambulances_dispatched / ambulances_total * 100
+        if ambulances_total
+        else 0.0
+    )
+
+    helicopters_available = fleet["helicopters"]["available"]
+    helicopters_dispatched = fleet["helicopters"]["dispatched"]
+    helicopters_total = helicopters_available + helicopters_dispatched
+
+    helicopters_pct = (
+        helicopters_dispatched / helicopters_total * 100
+        if helicopters_total
+        else 0.0
+    )
+
+    teams_available = teams["available_teams"]
+    teams_deployed = teams["deployed_teams"]
+    teams_total = teams_available + teams_deployed
+
+    teams_pct = (
+        teams_deployed / teams_total * 100
+        if teams_total
+        else 0.0
+    )
+
+    beds_occupied = facility_kpis.get("occupied_beds", 0)
+    beds_available = facility_kpis.get("available_beds", 0)
+    beds_total = beds_occupied + beds_available
+
+    beds_pct = (
+        beds_occupied / beds_total * 100
+        if beds_total
+        else 0.0
+    )
+
     snapshot = {
-        "Ambulances": 65,
-        "Helicopters": 50,
-        "Medical Teams": 60,
-        "Beds": 72,
+        "Ambulances": ambulances_pct,
+        "Helicopters": helicopters_pct,
+        "Medical Teams": teams_pct,
+        "Beds": beds_pct,
     }
-    history = st.session_state.setdefault("analytics_resource_history", [])
+
+    history = st.session_state.setdefault(
+        "analytics_resource_history",
+        []
+    )
+
     history.append(dict(snapshot))
     del history[:-RESOURCE_HISTORY_LIMIT]
+
     return snapshot
  
  
 def _get_sector_hotspots() -> list[dict]:
     """
-    # TODO Integration:
-    # Source -> Casualty.battle_sector / Incident.battle_sector, grouped
-    # via a page-local aggregation helper. No new crud function required.
+    Live Sector Hotspots.
+
+    Source:
+        patients_service.get_all_casualties()
+
+    Aggregation:
+        - casualties = number of casualty rows
+        - incidents = number of distinct incident_id values
+        - severity = highest severity present in the sector
     """
-    rows = [
-        {"sector": "Bravo", "incidents": 12, "casualties": 52, "severity": "Critical"},
-        {"sector": "Alpha", "incidents": 9, "casualties": 41, "severity": "Serious"},
-        {"sector": "Charlie", "incidents": 7, "casualties": 33, "severity": "Serious"},
-        {"sector": "Delta", "incidents": 5, "casualties": 22, "severity": "Moderate"},
-        {"sector": "Echo", "incidents": 2, "casualties": 9, "severity": "Mild"},
-    ]
-    return sorted(rows, key=lambda r: r["casualties"], reverse=True)
- 
- 
-# def _get_forecast_data() -> dict:
-#     """
-#     # TODO Integration:
-#     # Source -> statistical projection (moving average / linear trend)
-#     # computed over _get_casualty_trend()'s bucketed history. This is
-#     # explicitly a trend projection, not a predictive model — reflected
-#     # in the panel title "Operational Forecast".
-#     """
-#     forecast = {
-#         "Bed Availability": {
-#             "actual": [80, 76, 74, 70, 68, 64, 62, 58],
-#             "projected": [55, 52, 50, 47],
-#         },
-#         "Recoveries": {
-#             "actual": [0, 1, 2, 2, 3, 4, 5, 6],
-#             "projected": [7, 8, 8, 9],
-#         },
-#     }
-#     return forecast
- 
- 
-def _get_ai_recommendations() -> list[dict]:
-    try:
-        from backend.ai.recommendation_engine import generate_recommendations
 
-        simulation_state = {
-            "occupancy_rate": 72,
-            "queue_length": 9,
-            "critical_casualties": 4,
-            "available_medical_teams": 6,
-            "available_helicopters": 2,
-        }
+    casualties = patients_service.get_all_casualties()
 
-        recommendation = generate_recommendations(simulation_state)
+    severity_rank = {
+        severity: index
+        for index, severity in enumerate(SEVERITY_LIST)
+    }
 
-        confidence = recommendation.get("confidence", 0)
+    sectors = {}
 
-        if confidence >= 80:
-            priority = "HIGH"
-        elif confidence >= 60:
-            priority = "MEDIUM"
-        else:
-            priority = "LOW"
+    for casualty in casualties:
 
-        return [{
-            "priority": priority,
-            "recommendation": recommendation["recommendation"],
-            "reason": recommendation["reason"],
-            "confidence": int(confidence),
-        }]
+        sector = casualty.get("battle_sector")
 
-    except Exception:
-        return [
+        if not sector:
+            continue
+
+        bucket = sectors.setdefault(
+            sector,
             {
-                "priority": "LOW",
-                "recommendation": "AI recommendation unavailable.",
-                "reason": "Simulation state unavailable.",
-                "confidence": 0,
+                "incident_ids": set(),
+                "casualties": 0,
+                "severity": None,
+            },
+        )
+
+        bucket["casualties"] += 1
+
+        incident_id = casualty.get("incident_id")
+
+        if incident_id is not None:
+            bucket["incident_ids"].add(incident_id)
+
+        severity = casualty.get("severity")
+
+        if severity in severity_rank:
+
+            if (
+                bucket["severity"] is None
+                or severity_rank[severity]
+                < severity_rank[bucket["severity"]]
+            ):
+                bucket["severity"] = severity
+
+    rows = []
+
+    for sector, data in sectors.items():
+
+        rows.append(
+            {
+                "sector": sector,
+                "incidents": len(data["incident_ids"]),
+                "casualties": data["casualties"],
+                "severity": data["severity"] or SEVERITY_LIST[-1],
             }
-        ]
+        )
+
+    return sorted(
+        rows,
+        key=lambda row: row["casualties"],
+        reverse=True,
+    )
+ 
+def _get_triage_distribution() -> dict:
+    counts = {
+        "Critical": 0,
+        "Serious": 0,
+        "Moderate": 0,
+        "Mild": 0,
+    }
+
+    for casualty in crud.get_active_casualties():
+        severity = getattr(casualty, "severity", None)
+
+        if severity in counts:
+            counts[severity] += 1
+
+    return counts
+
+
+def _build_triage_chart() -> go.Figure:
+    data = _get_triage_distribution()
+
+    figure = go.Figure(
+        go.Bar(
+            x=list(data.keys()),
+            y=list(data.values()),
+            text=list(data.values()),
+            textposition="outside",
+        )
+    )
+
+    figure.update_layout(
+        height=CHART_HEIGHT_PX,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#AEBBC7",
+        xaxis=dict(showgrid=False),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+        ),
+    )
+
+    return figure
+
+
+def _render_triage_panel() -> None:
+    st.plotly_chart(
+        _build_triage_chart(),
+        use_container_width=True,
+    )
  
  
 def _get_ai_model_metrics():
@@ -246,33 +458,7 @@ def _get_ai_model_metrics():
             "recovery_r2": "Not Trained",
             "recovery_mae": "Not Trained",
         }
- 
- 
-def _get_insight_entries() -> list[dict]:
-    """
-    # TODO Integration:
-    # Source -> st.session_state mission log entries (mission_log.py),
-    # filtered to CATEGORY_RESOURCE / CATEGORY_QUEUE / CATEGORY_ADMISSION.
-    """
-    return [
-        {
-            "time": "09:45", "category": "Resource",
-            "message": "Medical Team Bravo dispatched to RAP (queue surge)",
-            "details": "Queue length exceeded surge threshold (10) at RAP; nearest available team dispatched.",
-        },
-        {
-            "time": "09:32", "category": "Admission",
-            "message": "CAS-017 admitted to RAP, bed 14",
-            "details": "Priority P1, Critical severity. Assigned on arrival after transit from Sector Bravo.",
-        },
-        {
-            "time": "09:05", "category": "Queue",
-            "message": "CAS-004 queued at ADS (no beds available)",
-            "details": "ADS at full capacity; casualty placed in priority-ordered waiting queue.",
-        },
-    ]
- 
- 
+  
 # --------------------------------------------------------------------------
 # CHART LAYER — pure figure builders, no Streamlit calls.
 # --------------------------------------------------------------------------
@@ -429,27 +615,6 @@ def _render_casualty_trend_panel() -> None:
         use_container_width=True,
     )
  
- 
-_PRIORITY_COLOR = {"HIGH": "danger", "MEDIUM": "warning", "LOW": "info"}
- 
- 
-def _render_ai_decision_support_panel() -> None:
-    recommendations = _get_ai_recommendations()[:4]
-    for i, rec in enumerate(recommendations):
-        color = _ACCENT[_PRIORITY_COLOR.get(rec["priority"], "info")]
-        st.markdown(
-            f'<span style="font-size:0.68rem;font-weight:700;letter-spacing:0.06em;'
-            f'color:{color};">{rec["priority"]}</span>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**{rec['recommendation']}**")
-        st.caption(rec["reason"])
-        st.progress(rec["confidence"] / 100)
-        st.caption(f"{rec['confidence']}% confidence")
-        if i < len(recommendations) - 1:
-            st.divider()
- 
- 
 def _render_facility_load_panel() -> None:
     data = _get_facility_load()
     st.plotly_chart(_build_facility_load_chart(data), use_container_width=True)
@@ -475,14 +640,6 @@ def _render_resource_utilization_panel() -> None:
  
 def _render_sector_hotspot_panel() -> None:
     st.plotly_chart(_build_sector_hotspot_chart(_get_sector_hotspots()), use_container_width=True)
- 
- 
-def _render_insights_timeline_panel() -> None:
-    for entry in _get_insight_entries():
-        with st.expander(f"{entry['time']} · {entry['category']}"):
-            st.caption(entry["message"])
-            st.caption(entry["details"])
- 
  
 def _render_ai_model_performance_panel() -> None:
     metrics = _get_ai_model_metrics()
@@ -536,23 +693,20 @@ def render() -> None:
 
         st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
 
-        with panel("AI Insights Timeline"):
-            _render_insights_timeline_panel()
-
+        with panel("Sector Hotspots"):
+            _render_sector_hotspot_panel()
 
     with top_right:
-        with panel("AI-Assisted Decision Support"):
-            _render_ai_decision_support_panel()
 
-
-    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
-
-    bottom_left, bottom_right = st.columns([1, 1])
-
-    with bottom_left:
         with panel("Resource Utilization"):
             _render_resource_utilization_panel()
 
-    with bottom_right:
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+
+        with panel("Triage Severity Distribution"):
+            _render_triage_panel()
+
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+
         with panel("AI Model Performance"):
             _render_ai_model_performance_panel()

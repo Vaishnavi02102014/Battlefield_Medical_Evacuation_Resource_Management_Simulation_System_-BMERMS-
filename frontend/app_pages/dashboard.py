@@ -16,11 +16,17 @@ panel(), and buttons() components — no page-level CSS, no hardcoded colors.
 """
  
 import streamlit as st
+import plotly.graph_objects as go
  
 from components.metric_card import metric_card
 from components.panel import panel
-from components.buttons import primary_button
 from services import dashboard_service
+from backend.database import crud
+from services import facilities_service
+from services import resources_service
+
+from components.map_adapter import get_map_data
+from components.tactical_map import render_tactical_map
  
 KPI_CARD_META = [
     ("total_casualties_processed", "Total Casualties Processed", "■", "info"),
@@ -46,13 +52,6 @@ WORKFLOW_END_STAGE = {
 }
 
 FACILITY_STAGE_ICON = "✚"
- 
-AI_RECOMMENDATION = {
-    "priority": "HIGH",
-    "recommendation": "Deploy Ambulance A-03 to RAP.",
-    "reason": "Predicted occupancy exceeds threshold.",
-    "confidence": 94,
-}
  
 def _render_kpi_row():
     summary = dashboard_service.get_kpi_summary()
@@ -127,39 +126,66 @@ def _render_evacuation_workflow():
                 idx += 1
             else:
                 st.markdown("➜")
- 
-def _render_mission_log():
-    entries = dashboard_service.get_mission_log(limit=5)
 
-    if not entries:
-        st.caption("No recent activity.")
-        return
+def _build_facility_status() -> list[dict]:
+    return [
+        {
+            "name": facility["facility_type"],
+            "full_name": facility["name"],
+            "facility_code": facility["facility_code"],
+            "capacity": facility["capacity"],
+            "occupied": facility["occupied"],
+            "waiting": facility["queue"],
+            "avg_treatment": facility["avg_treatment"],
+            "status": facility["status"],
+        }
+        for facility in facilities_service.get_facility_overview()
+    ]
 
-    for i, entry in enumerate(entries):
-        st.markdown(
-            f"""
-            <span style='color:#8B97A5'>[{entry["time"]}]</span>
-            <span style='font-weight:600'>{entry["category"].upper()}</span>
-            """,
-            unsafe_allow_html=True,
-        )
 
-        st.caption(entry["description"])
+def _build_resource_status() -> list[dict]:
+    fleet = resources_service.get_fleet_status()
+    teams = resources_service.get_medical_team_status()
 
-        if i < len(entries) - 1:
-            st.divider()
+    return [
+        {
+            "name": "Ambulances",
+            "icon": "🚑",
+            "available": fleet["ambulances"]["available"],
+            "dispatched": fleet["ambulances"]["dispatched"],
+        },
+        {
+            "name": "Helicopters",
+            "icon": "🚁",
+            "available": fleet["helicopters"]["available"],
+            "dispatched": fleet["helicopters"]["dispatched"],
+        },
+        {
+            "name": "Medical Teams",
+            "icon": "🧑‍⚕️",
+            "available": teams["available_teams"],
+            "dispatched": teams["deployed_teams"],
+        },
+    ]
  
 def _render_battlefield_map():
-    st.write("")
-    st.write("")
-    _, c, _ = st.columns([1, 2, 1])
-    with c:
-        st.markdown("# 🗺️")
-        st.markdown("### Battlefield Map")
-        st.caption("Live Tracking")
-        st.caption("Map Integration Coming Soon")
-    st.write("")
-    st.write("")
+    facility_status = _build_facility_status()
+    resource_status = _build_resource_status()
+
+    map_data = get_map_data(
+        facility_status,
+        resource_status,
+        crud.get_recent_incidents(),
+        crud.get_active_casualties(),
+        crud.get_all_ambulances(),
+        crud.get_all_helicopters(),
+        crud.get_all_medical_teams(),
+    )
+
+    render_tactical_map(
+        map_data,
+        mode="dashboard",
+    )
  
 def _render_asset_row(resource):
     with st.container(border=True):
@@ -176,25 +202,7 @@ def _render_asset_inventory():
     for r in dashboard_service.get_asset_inventory():
         _render_asset_row(r)
  
-def _render_ai_recommendation():
-    for label, value in [
-        ("Priority", AI_RECOMMENDATION["priority"]),
-        ("Recommendation", AI_RECOMMENDATION["recommendation"]),
-        ("Reason", AI_RECOMMENDATION["reason"]),
-        ("Confidence", f"{AI_RECOMMENDATION['confidence']}%"),
-    ]:
-        st.caption(label)
-        st.markdown(f"**{value}**")
-    primary_button("Execute", key="dashboard_ai_execute")
- 
-def _render_triage_chart_placeholder():
-    st.write("")
-    _, c, _ = st.columns([1, 2, 1])
-    with c:
-        st.markdown("# ⚕️")
-        st.markdown("### Triage Severity")
-        st.caption("Chart Integration Coming Soon")
- 
+
 def render():
     _render_kpi_row()
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
@@ -202,26 +210,12 @@ def render():
     with panel("Battlefield Evacuation Workflow"):
         _render_evacuation_workflow()
  
-    log_col, map_col, asset_col = st.columns([3, 6, 3])
- 
-    with log_col:
-        with panel("Mission Log"):
-            _render_mission_log()
- 
+    map_col, asset_col = st.columns([8, 4])
+
     with map_col:
         with panel("Battlefield Map"):
             _render_battlefield_map()
- 
+
     with asset_col:
         with panel("Asset Inventory"):
             _render_asset_inventory()
- 
-    ai_col, triage_col = st.columns([3, 2])
- 
-    with ai_col:
-        with panel("AI Tactical Recommendation"):
-            _render_ai_recommendation()
- 
-    with triage_col:
-        with panel("Triage Severity Chart"):
-            _render_triage_chart_placeholder()

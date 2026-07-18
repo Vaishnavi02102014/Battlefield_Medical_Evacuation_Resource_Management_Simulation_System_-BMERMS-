@@ -214,35 +214,6 @@ def _render_resource_allocation() -> None:
         )
         st.plotly_chart(figure, use_container_width=True)
  
- 
-def _render_dispatch_timeline() -> None:
-    """Stacked bar chart of dispatches per hour, from get_dispatch_history()."""
-    history = get_dispatch_history()
- 
-    with st.container(height=CHART_PANEL_HEIGHT_PX, border=False):
-        if not history:
-            st.caption("No dispatch activity recorded.")
-            return
- 
-        times = [entry["time"] for entry in history]
-        figure = go.Figure()
-        figure.add_trace(go.Bar(x=times, y=[e["ambulances"] for e in history], name="Ambulances", marker_color="#3ddc84"))
-        figure.add_trace(go.Bar(x=times, y=[e["helicopters"] for e in history], name="Helicopters", marker_color="#f2b84b"))
-        figure.add_trace(go.Bar(x=times, y=[e["medical_teams"] for e in history], name="Medical Teams", marker_color="#7aa7ff"))
-        figure.update_layout(
-            barmode="stack",
-            margin=dict(l=10, r=10, t=10, b=10),
-            height=260,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#AEBBC7",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)"),
-        )
-        st.plotly_chart(figure, use_container_width=True)
- 
- 
 def _render_resource_availability() -> None:
     """Operational readiness at a glance — availability bar + 'X OF Y AVAILABLE' per resource pool."""
     colors = {
@@ -298,13 +269,12 @@ def render() -> None:
         with panel("Medical Team Status"):
             _render_medical_team_status()
  
-    allocation_col, dispatch_col, availability_col = st.columns([2, 2, 1])
+    left_margin, allocation_col, availability_col, right_margin = st.columns([0.15, 1.5, 1, 1.35])
+
     with allocation_col:
         with panel("Resource Allocation"):
             _render_resource_allocation()
-    with dispatch_col:
-        with panel("Dispatch Timeline"):
-            _render_dispatch_timeline()
+
     with availability_col:
         with panel("Resource Availability"):
             _render_resource_availability()

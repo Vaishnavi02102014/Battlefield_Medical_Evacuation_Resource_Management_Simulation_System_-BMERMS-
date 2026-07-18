@@ -38,6 +38,18 @@ from .resource_assessment import assess_resource_load
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+CONFIDENCE_HIGH = 90.0
+CONFIDENCE_MEDIUM_HIGH = 75.0
+CONFIDENCE_MEDIUM = 65.0
+
+CONFIDENCE_CORROBORATION_BONUS = 5.0
+CONFIDENCE_ACTIONABILITY_BONUS = 10.0
+CONFIDENCE_ACTIONABILITY_PENALTY = 15.0
+
+CONFIDENCE_FLOOR_HIGH = 85.0
+CONFIDENCE_FLOOR_MEDIUM = 65.0
+CONFIDENCE_FLOOR_LOW = 50.0
+CONFIDENCE_CEILING = 100.0
  
 def _coerce_number(value: Any, default: float) -> float:
     if value is None:
@@ -46,16 +58,68 @@ def _coerce_number(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+    
+def _clamp_confidence(value: float, floor: float) -> float:
+    return round(
+        max(floor, min(value, CONFIDENCE_CEILING)),
+        2,
+    )
  
  
 def _available_helicopters(simulation_state: Optional[Dict[str, Any]]) -> float:
-    """Reads available_helicopters directly from simulation_state. This
-    signal is not part of the centralized resource load score (which
-    covers occupancy, queue, critical casualties, and overall resource
-    shortage), so it is still read here for the evacuation-specific
-    overflow-bed rule."""
     state = simulation_state if isinstance(simulation_state, dict) else {}
     return _coerce_number(state.get("available_helicopters"), 0.0)
+
+def _available_ambulances(simulation_state: Optional[Dict[str, Any]]) -> float:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return _coerce_number(state.get("available_ambulances"), 0.0)
+
+
+def _critical_casualties(simulation_state: Optional[Dict[str, Any]]) -> float:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return _coerce_number(state.get("critical_casualties"), 0.0)
+
+def _occupancy_rate(simulation_state: Optional[Dict[str, Any]]) -> float:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return _coerce_number(state.get("occupancy_rate"), 0.0)
+
+
+def _queue_length(simulation_state: Optional[Dict[str, Any]]) -> float:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return _coerce_number(state.get("queue_length"), 0.0)
+
+def _highest_load_facility(simulation_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return state.get("highest_load_facility") or {}
+
+
+def _lowest_load_facility(simulation_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return state.get("lowest_load_facility") or {}
+
+
+def _casualty_word(count: float) -> str:
+    return "casualty" if round(count) == 1 else "casualties"
+
+def _available_medical_teams(simulation_state: Optional[Dict[str, Any]]) -> float:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return _coerce_number(state.get("available_medical_teams"), 0.0)
+
+def _highest_queue_facility(simulation_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    state = simulation_state if isinstance(simulation_state, dict) else {}
+    return state.get("highest_queue_facility") or {}
+
+
+def _humanize_transfer_prediction(predictions: Dict[str, Any]) -> str:
+    status = predictions.get("transfer_required")
+
+    if status == "Yes":
+        return "the transfer model predicts an evacuation transfer will be required"
+
+    if status == "No":
+        return "the transfer model predicts an evacuation transfer will not be required"
+
+    return "the transfer model prediction is currently unavailable"
   
 def _safe_predictions(simulation_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Runs the prediction engine defensively: if the trained models
@@ -102,15 +166,76 @@ def _rule_critical_casualties(
     simulation_state: Optional[Dict[str, Any]], resource: Dict[str, Any], predictions: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
     if resource["resource_level"] == "Critical Load" and resource["primary_driver"] == "critical":
+        critical = _critical_casualties(simulation_state)
+        word = _casualty_word(critical)
+        transfer_clause = _humanize_transfer_prediction(predictions)
+
+        confidence = CONFIDENCE_HIGH
+
+        if predictions.get("transfer_required") == "Yes":
+            confidence += CONFIDENCE_CORROBORATION_BONUS
+
+        confidence = _clamp_confidence(
+            confidence,
+            CONFIDENCE_FLOOR_HIGH,
+        )
+
         return {
-            "recommendation": "Pre-stage helicopter support.",
-            "reason": (
-                f"{resource['reason']} "
-                f"The transfer model predicts transfer_required={predictions['transfer_required']}."
-            ),
-            "expected_benefit": "Reduces evacuation delay for critical casualties and improves transfer readiness.",
-            "confidence": round(predictions["transfer_confidence"], 2),
+            "recommendation":
+                "Pre-stage additional helicopter support for critical casualty evacuation.",
+
+            "reason":
+                f"Critical casualty count has reached {int(critical)} {word}, the primary driver behind the current {resource['resource_level']} classification, and {transfer_clause}.",
+
+            "expected_benefit":
+                f"Commits helicopter capacity to the {int(critical)} critical {word} while it remains available, ahead of any subsequent shortage that would otherwise force evacuation onto slower ground transport.",
+
+            "confidence": confidence,
         }
+    return None
+
+def _rule_no_evacuation_assets(
+    simulation_state: Optional[Dict[str, Any]],
+    resource: Dict[str, Any],
+    predictions: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+
+    if (
+        _available_helicopters(simulation_state) <= 0
+        and _available_ambulances(simulation_state) <= 0
+        and _critical_casualties(simulation_state) > 0
+    ):
+        critical = _critical_casualties(simulation_state)
+        word = _casualty_word(critical)
+        confidence = CONFIDENCE_HIGH
+
+        if resource["resource_level"] in ("High Load", "Critical Load"):
+            confidence += CONFIDENCE_CORROBORATION_BONUS
+
+        if resource["primary_driver"] in ("critical", "resources"):
+            confidence += CONFIDENCE_CORROBORATION_BONUS
+
+        confidence = _clamp_confidence(
+            confidence,
+            CONFIDENCE_FLOOR_HIGH,
+        )
+
+        return {
+            "recommendation":
+                "Activate contingency evacuation protocol for critical casualty transport.",
+
+            "reason":
+                f"No helicopters or ambulances are currently available while "
+                f"{int(critical)} critical {word} require evacuation. "
+                f"Resource load is classified as {resource['resource_level']}.",
+
+            "expected_benefit":
+                f"Restores the ability to evacuate the {int(critical)} critical {word} to their designated treatment facility instead of leaving them without any evacuation option.",
+
+            "confidence": confidence,
+
+                }
+
     return None
  
  
@@ -118,62 +243,244 @@ def _rule_high_occupancy(
     simulation_state: Optional[Dict[str, Any]], resource: Dict[str, Any], predictions: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
     if resource["resource_level"] in ("High Load", "Critical Load") and resource["primary_driver"] == "occupancy":
+        occupancy = _occupancy_rate(simulation_state)
+
+        facility = _highest_load_facility(simulation_state)
+
+        facility_name = (
+            facility.get("name")
+            or facility.get("facility_type")
+            or "the highest-load facility"
+        )
+        confidence = (
+                CONFIDENCE_HIGH
+                if resource["resource_level"] == "Critical Load"
+                else CONFIDENCE_MEDIUM_HIGH
+            )
+
+        if _available_medical_teams(simulation_state) > 0:
+            confidence += CONFIDENCE_ACTIONABILITY_BONUS
+        else:
+            confidence -= CONFIDENCE_ACTIONABILITY_PENALTY
+
+        confidence = _clamp_confidence(
+            confidence,
+            CONFIDENCE_FLOOR_LOW,
+        )
+
         return {
-            "recommendation": "Deploy additional medical team to ADS.",
-            "reason": resource["reason"],
-            "expected_benefit": "Increases treatment throughput and reduces risk of care delays under high occupancy.",
-            "confidence": predictions["duty_confidence"],
-        }
+            "recommendation":
+                f"Deploy an additional medical team to {facility_name}.",
+
+            "reason":
+                f"{facility_name} is currently the highest-load facility while theatre-wide occupancy has reached "
+                f"{occupancy:.0f}%, the primary driver behind the current {resource['resource_level']} classification.",
+
+            "expected_benefit":
+                 f"Shortens treatment duration at {facility_name}, freeing beds more quickly for incoming casualties.",
+
+            "confidence": confidence,
+                }
+    
     return None
  
  
 def _rule_high_queue(
-    simulation_state: Optional[Dict[str, Any]], resource: Dict[str, Any], predictions: Dict[str, Any]
+    simulation_state: Optional[Dict[str, Any]],
+    resource: Dict[str, Any],
+    predictions: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    if resource["resource_level"] in ("High Load", "Critical Load") and resource["primary_driver"] == "queue":
+
+    if (
+        resource["resource_level"] in ("High Load", "Critical Load")
+        and resource["primary_driver"] == "queue"
+    ):
+        queue = _queue_length(simulation_state)
+        word = _casualty_word(queue)
+        facility = _highest_queue_facility(simulation_state)
+
+        facility_name = (
+            facility.get("name")
+            or facility.get("facility_type")
+            or "the affected facility"
+        )
+
+        # Is a medical team currently available?
+        teams_available = _available_medical_teams(simulation_state) > 0
+
+        # Base confidence
+        confidence = (
+            CONFIDENCE_HIGH
+            if resource["resource_level"] == "Critical Load"
+            else CONFIDENCE_MEDIUM_HIGH
+        )
+
+        # Actionability adjustment
+        if teams_available:
+            confidence += CONFIDENCE_ACTIONABILITY_BONUS
+        else:
+            confidence -= CONFIDENCE_ACTIONABILITY_PENALTY
+
+        confidence = _clamp_confidence(
+            confidence,
+            CONFIDENCE_FLOOR_LOW,
+        )
+
+        # Medical teams available
+        if teams_available:
+            return {
+                "recommendation":
+                    f"Deploy additional medical team support at {facility_name} to increase treatment throughput.",
+
+                "reason":
+                    f"Casualty queue length has reached {int(queue)} {word} at {facility_name}, the primary driver behind the current {resource['resource_level']} classification.",
+
+                "expected_benefit":
+                    f"Speeds treatment turnover at {facility_name}, reducing casualty waiting time without "
+                    f"reassigning casualties across the fixed severity-based evacuation chain.",
+
+                "confidence": confidence,
+            }
+
+        # No medical teams available
         return {
-            "recommendation": "Reroute casualties to RAP-2.",
-            "reason": resource["reason"],
-            "expected_benefit": "Balances patient load across facilities and reduces average wait time.",
-            "confidence": predictions["transfer_confidence"],
+            "recommendation":
+                f"Request additional medical team allocation — no teams are currently available "
+                f"for automatic surge dispatch at {facility_name}.",
+
+            "reason":
+                f"Casualty queue length has reached {int(queue)} {word} at {facility_name}, the primary driver behind the current {resource['resource_level']} classification, and no medical teams remain available for surge dispatch.",
+
+            "expected_benefit":
+                f"Restores the ability to automatically dispatch a medical team to {facility_name}, reducing treatment backlog and casualty waiting time.",
+
+            "confidence": confidence,
         }
+
     return None
  
  
 def _rule_resource_shortage(
     simulation_state: Optional[Dict[str, Any]], resource: Dict[str, Any], predictions: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
-    if _available_helicopters(simulation_state) <= 0 and (
-        resource["resource_level"] == "Critical Load" or predictions["transfer_required"] == "Yes"
+    if (
+        _available_helicopters(simulation_state) <= 0
+        and _critical_casualties(simulation_state) > 0
     ):
+        
+        critical = _critical_casualties(simulation_state)
+        word = _casualty_word(critical)
+
+        confidence = CONFIDENCE_MEDIUM
+
+        if resource["resource_level"] == "Critical Load":
+            confidence += CONFIDENCE_CORROBORATION_BONUS
+
+        confidence = _clamp_confidence(
+            confidence,
+            CONFIDENCE_FLOOR_MEDIUM,
+        )
+
         return {
-            "recommendation": "Prepare overflow beds.",
-            "reason": (
-                "No helicopters are currently available while resource load is elevated "
-                f"({resource['reason']})."
-            ),
-            "expected_benefit": "Ensures continuity of care while evacuation resources are unavailable.",
-            "confidence": predictions["duty_confidence"],
+            "recommendation":
+                "Request helicopter reinforcement and prioritize remaining evacuation assets for critical and serious casualties.",
+
+            "reason":
+                f"Overall resource availability is classified as {resource['resource_level']}, while "
+                f"{int(critical)} critical {word} continue to require helicopter evacuation.",
+
+            "expected_benefit":
+                f"Restores helicopter availability for rapid evacuation of {int(critical)} critical {word} while allowing available ground evacuation assets to continue supporting lower-priority transports.",
+
+            "confidence": confidence,  
         }
     return None
  
- 
+def _rule_ambulance_shortage(
+    simulation_state: Optional[Dict[str, Any]],
+    resource: Dict[str, Any],
+    predictions: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+
+    if (
+        _available_ambulances(simulation_state) <= 0
+        and _available_helicopters(simulation_state) > 0
+    ):
+        
+        confidence = CONFIDENCE_MEDIUM
+
+        if resource["resource_level"] != "Normal":
+            confidence += CONFIDENCE_CORROBORATION_BONUS
+
+        if resource["primary_driver"] == "resources":
+            confidence += CONFIDENCE_CORROBORATION_BONUS
+
+        confidence = _clamp_confidence(
+            confidence,
+            CONFIDENCE_FLOOR_MEDIUM,
+        )
+
+        return {
+            "recommendation":
+                "Request ambulance reinforcement and prioritize available ground evacuation resources for moderate casualties.",
+
+            "reason":
+                f"All ambulances are currently committed while helicopter resources remain available for critical casualty evacuation.",
+
+            "expected_benefit":
+                "Restores dedicated ground evacuation capacity for future casualty transports while helicopters remain focused on critical evacuations.",
+            
+            "confidence": confidence,
+        }
+
+    return None
+
 def _rule_default(
-    simulation_state: Optional[Dict[str, Any]], resource: Dict[str, Any], predictions: Dict[str, Any]
+    simulation_state: Optional[Dict[str, Any]],
+    resource: Dict[str, Any],
+    predictions: Dict[str, Any],
 ) -> Dict[str, Any]:
+
+    occupancy = _occupancy_rate(simulation_state)
+    queue = _queue_length(simulation_state)
+
+    # Compute confidence BEFORE returning
+    if resource["resource_level"] == "Normal":
+        confidence = CONFIDENCE_HIGH
+
+        if (
+            _available_helicopters(simulation_state) > 0
+            and _available_ambulances(simulation_state) > 0
+            and _available_medical_teams(simulation_state) > 0
+        ):
+            confidence += CONFIDENCE_CORROBORATION_BONUS
+    else:
+        confidence = CONFIDENCE_MEDIUM
+
+    confidence = _clamp_confidence(
+        confidence,
+        CONFIDENCE_FLOOR_LOW,
+    )
+
     return {
-        "recommendation": "Continue standard operations and monitoring.",
-        "reason": resource["reason"],
-        "expected_benefit": "Maintains current operational efficiency with no additional resource reallocation required.",
-        "confidence": max(
-            predictions.get("transfer_confidence") or 0.0,
-            predictions.get("duty_confidence") or 0.0,
-        ),
+        "recommendation":
+            "Continue current evacuation and treatment operations.",
+
+        "reason":
+            "No operational thresholds requiring intervention have been exceeded, and evacuation and treatment resources remain within expected operating limits.",
+
+        "expected_benefit":
+            "Maintains stable casualty evacuation and treatment flow without unnecessary resource redistribution.",
+
+        "confidence": confidence,
     }
+    
  
  
 RULES = [
+    _rule_no_evacuation_assets,
     _rule_critical_casualties,
+    _rule_ambulance_shortage,
     _rule_high_occupancy,
     _rule_high_queue,
     _rule_resource_shortage,
@@ -212,6 +519,9 @@ def generate_recommendations(simulation_state: Optional[Dict[str, Any]]) -> Dict
     """
     resource = _safe_resource_assessment(simulation_state)
     predictions = _safe_predictions(simulation_state)
+    print("Simulation State:", simulation_state)
+    print("Resource:", resource)
+    print("Predictions:", predictions)
  
     for rule in RULES:
         result = rule(simulation_state, resource, predictions)

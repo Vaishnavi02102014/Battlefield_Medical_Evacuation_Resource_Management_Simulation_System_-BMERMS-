@@ -54,6 +54,38 @@ from services import facilities_service  # noqa: E402
 from services import resources_service  # noqa: E402
 from services import patients_service  # noqa: E402
 
+def _facility_occupancy_pct(facility: dict) -> float:
+    capacity = facility.get("capacity") or 0
+    occupied = facility.get("occupied") or 0
+    return (occupied / capacity * 100) if capacity else 0.0
+
+def _facility_summary(facilities: list) -> dict:
+    if not facilities:
+        return {
+            "highest_load_facility": None,
+            "lowest_load_facility": None,
+            "highest_queue_facility": None,
+            "lowest_queue_facility": None,
+        }
+
+    return {
+        "highest_load_facility": max(
+            facilities,
+            key=_facility_occupancy_pct,
+        ),
+        "lowest_load_facility": min(
+            facilities,
+            key=_facility_occupancy_pct,
+        ),
+        "highest_queue_facility": max(
+            facilities,
+            key=lambda f: f.get("queue") or 0,
+        ),
+        "lowest_queue_facility": min(
+            facilities,
+            key=lambda f: f.get("queue") or 0,
+        ),
+    }
 
 def _build_simulation_state() -> dict:
     """
@@ -65,8 +97,8 @@ def _build_simulation_state() -> dict:
     from what those services already correctly compute.
     """
     facility_kpis = facilities_service.get_kpi_summary()
-    total_beds = facility_kpis["available_beds"] + facility_kpis["occupied_beds"]
-    occupancy_rate = (facility_kpis["occupied_beds"] / total_beds * 100) if total_beds else 0.0
+    total_beds = facility_kpis.get("available_beds", 0) + facility_kpis.get("occupied_beds", 0)
+    occupancy_rate = (facility_kpis.get("occupied_beds", 0) / total_beds * 100) if total_beds else 0.0
 
     fleet = resources_service.get_fleet_status()
     teams = resources_service.get_medical_team_status()
@@ -75,13 +107,17 @@ def _build_simulation_state() -> dict:
         1 for casualty in patients_service.get_all_casualties()
         if casualty.get("severity") == "Critical"
     )
+    facilities = facilities_service.get_facility_overview()
 
     return {
         "occupancy_rate": occupancy_rate,
-        "queue_length": facility_kpis["waiting_casualties"],
+        "queue_length": facility_kpis.get("waiting_casualties", 0),
         "critical_casualties": critical_casualties,
-        "available_medical_teams": teams["available_teams"],
-        "available_helicopters": fleet["helicopters"]["available"],
+        "available_medical_teams": teams.get("available_teams", 0),
+        "available_helicopters": fleet.get("helicopters", {}).get("available", 0),
+        "available_ambulances": fleet.get("ambulances", {}).get("available", 0),
+        "facilities": facilities,
+        **_facility_summary(facilities),
     }
 
 

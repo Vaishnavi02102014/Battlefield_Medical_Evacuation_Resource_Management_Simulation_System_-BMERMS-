@@ -1,0 +1,14 @@
+{
+  "transfer_model": {
+    "target": "Transfer_Required",
+    "type": "RandomForestClassifier"
+  },
+  "recovery_model": {
+    "target": "Predicted_Recovery_Days",
+    "type": "RandomForestRegressor"
+  },
+  "duty_model": {
+    "target": "Return_to_Duty",
+    "type": "RandomForestClassifier"
+  }
+}

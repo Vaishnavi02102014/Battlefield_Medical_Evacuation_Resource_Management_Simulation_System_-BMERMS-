@@ -26,10 +26,10 @@ RESOURCE_RULES_PATH = BASE_DIR / "resource_rules.json"
  
 DEFAULT_RULES = {
     "weights": {
-        "occupancy": 0.5,
-        "queue": 0.2,
-        "critical": 0.2,
-        "resources": 0.1,
+        "occupancy": 0.30,
+        "queue": 0.20,
+        "critical": 0.40,
+        "resources": 0.10,
     },
     "thresholds": {
         "high": 70,

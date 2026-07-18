@@ -37,7 +37,9 @@ from .feature_builder import (
 from .model_loader import load_duty_model, load_recovery_model, load_transfer_model
  
 CLASS_LABELS = {0: "No", 1: "Yes"}
- 
+
+def _build_dataframe(features: Dict[str, Any]) -> pd.DataFrame:
+    return pd.DataFrame([features])
  
 def _load_model_safe(loader, model_name: str):
     """Load a model via model_loader, converting any loading failure
@@ -60,10 +62,10 @@ def _predict_classification(model, features: Dict[str, Any]) -> Dict[str, Any]:
     """Runs a classifier on a single-row feature dict and returns the
     decoded label plus confidence (max predicted-class probability, as
     a percentage)."""
-    X = pd.DataFrame([features])
+    X = _build_dataframe(features)
     prediction = model.predict(X)[0]
     probabilities = model.predict_proba(X)[0]
-    confidence = round(max(probabilities) * 100, 2)
+    confidence = max(0.0, min(100.0, round(max(probabilities) * 100, 2)))
     label = CLASS_LABELS.get(int(prediction), str(prediction))
     return {"label": label, "confidence": float(confidence)}
  
@@ -118,11 +120,12 @@ def predict_recovery_days(simulation_state: Dict[str, Any]) -> Dict[str, Any]:
     """
     model = _load_model_safe(load_recovery_model, "recovery_model")
     features = build_recovery_features(simulation_state)
-    X = pd.DataFrame([features])
-    prediction = model.predict(X)[0]
+    X = _build_dataframe(features)
+    prediction = max(0.0, float(model.predict(X)[0]))
+
     return {
         "predicted_recovery_days":
-            round(float(prediction), 1)
+            round(prediction, 1)
     }
  
  
@@ -182,9 +185,28 @@ def generate_predictions(simulation_state: Dict[str, Any]) -> Dict[str, Any]:
         If any of the three model files cannot be loaded (e.g. because
         train_models.py has not been run yet).
     """
-    transfer_result = predict_transfer_requirement(simulation_state)
-    recovery_result = predict_recovery_days(simulation_state)
-    duty_result = predict_return_to_duty(simulation_state)
+    try:
+        transfer_result = predict_transfer_requirement(simulation_state)
+    except Exception:
+        transfer_result = {
+            "transfer_required": "Unknown",
+            "transfer_confidence": 0.0,
+        }
+
+    try:
+        recovery_result = predict_recovery_days(simulation_state)
+    except Exception:
+        recovery_result = {
+            "predicted_recovery_days": 0.0,
+        }
+
+    try:
+        duty_result = predict_return_to_duty(simulation_state)
+    except Exception:
+        duty_result = {
+            "return_to_duty": "Unknown",
+            "duty_confidence": 0.0,
+        }
  
     return {
         "transfer_required": transfer_result["transfer_required"],

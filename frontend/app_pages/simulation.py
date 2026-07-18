@@ -133,6 +133,7 @@ Generator never touches the Mission Log.
  
 from __future__ import annotations
 import html
+import re
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from backend.database import crud
@@ -145,7 +146,15 @@ from components.panel import panel
 from components.buttons import primary_button, secondary_button
 from components.map_adapter import get_map_data
 from components.tactical_map import render_tactical_map
-from utils.theme import resolve_color, COLOR_TEXT_SECONDARY, COLOR_BORDER
+from utils.theme import (
+    resolve_color,
+    COLOR_TEXT_SECONDARY,
+    COLOR_BORDER,
+    COLOR_BACKGROUND,
+    COLOR_DANGER,
+    COLOR_WARNING,
+    COLOR_PRIMARY,
+)
  
 # --------------------------------------------------------------------------
 # CONSISTENT MOCK SIMULATION STATE
@@ -420,6 +429,10 @@ def _render_status_button_row() -> None:
 
                     if "tactical_map_reset_counter" in st.session_state:
                         st.session_state["tactical_map_reset_counter"] += 1
+                    # Clear Analytics casualty trend history so the
+                    # trend chart starts empty after Reset Simulation.
+                    if "analytics_casualty_history" in st.session_state:
+                        st.session_state["analytics_casualty_history"].clear()
 
                 else:
                     st.session_state["simulation_status"] = target_status
@@ -719,26 +732,177 @@ def _render_facility_status() -> None:
         st.markdown(_facility_summary_html(facility, occupancy_pct, index == last_index), unsafe_allow_html=True)
  
  
+# --------------------------------------------------------------------------
+# AI Tactical Recommendation — command-decision card
+#
+# recommendation_engine.py's output ({"recommendation", "reason",
+# "expected_benefit", "confidence"}) carries no "priority" field, and
+# backend/recommendation logic is out of scope for this UI pass, so the
+# priority badge level is inferred here, display-only, from confidence
+# (with the engine's own "standard operations" sentinel always treated
+# as NORMAL). Some "reason" strings can currently embed raw
+# resource_assessment.py metrics (occupancy=, queue=, critical=,
+# weighted load score, primary driver) and predictor.py fields
+# (transfer_required=) — those never reach the screen; their meaning is
+# translated into plain language and every raw fragment is stripped
+# below, without touching any backend text.
+# --------------------------------------------------------------------------
+
+_STANDARD_MONITORING_TEXT = "Continue standard operations and monitoring."
+
+PRIORITY_BADGE_COLORS = {
+    "CRITICAL": COLOR_DANGER,
+    "HIGH": "#F2984B",  # orange — no dedicated theme.py token; reserved for this badge only
+    "MEDIUM": COLOR_WARNING,
+    "NORMAL": COLOR_PRIMARY,
+}
+
+_PRIMARY_DRIVER_LABELS = {
+    "occupancy": "Facility occupancy is the primary constraint.",
+    "queue": "Casualty queue length is the primary constraint.",
+    "critical": "Critical casualty volume is the primary constraint.",
+    "resources": "Available resource shortage is the primary constraint.",
+}
+
+_DEBUG_MARKER_PATTERN = re.compile(
+    r"occupancy=|queue=|critical=|resources=|weighted load score|primary driver|transfer_required=",
+    re.IGNORECASE,
+)
+
+
+def _ai_priority_level(recommendation: dict) -> str:
+    """
+    Display-only priority badge.
+
+    Until the backend provides an explicit priority field,
+    infer it from the recommendation text instead of AI confidence.
+    """
+
+    text = recommendation.get("recommendation", "").lower()
+
+    if "contingency evacuation" in text:
+        return "CRITICAL"
+
+    elif "deploy" in text:
+        return "HIGH"
+
+    elif "reroute" in text:
+        return "HIGH"
+
+    elif "prepare" in text:
+        return "MEDIUM"
+
+    return "NORMAL"
+
+
+def _priority_badge_html(level: str) -> str:
+    color = PRIORITY_BADGE_COLORS.get(level, COLOR_PRIMARY)
+    return (
+        f'<span style="display:inline-block;padding:3px 10px;border-radius:4px;'
+        f'font-size:0.70rem;font-weight:700;letter-spacing:0.06em;'
+        f'color:{COLOR_BACKGROUND};background:{color};">{html.escape(level)}</span>'
+    )
+
+
+def _build_reason_bullets(reason: str) -> list[str]:
+    """Translates a recommendation_engine.py `reason` string into 1+
+    clean, human-readable bullets, extracting the meaning of any raw
+    metric fields into plain language first, then stripping every
+    remaining raw fragment (see module note above)."""
+    text = reason or ""
+    bullets: list[str] = []
+
+    driver_match = re.search(r"primary driver:\s*(\w+)", text, re.IGNORECASE)
+    if driver_match:
+        bullets.append(
+            _PRIMARY_DRIVER_LABELS.get(
+                driver_match.group(1).lower(), "Resource load is currently elevated."
+            )
+        )
+
+    transfer_match = re.search(r"transfer_required=(\w+)", text, re.IGNORECASE)
+    if transfer_match:
+        verdict = "required" if transfer_match.group(1).lower() == "yes" else "not required"
+        bullets.append(f"Transfer is predicted to be {verdict}.")
+
+    # Peel off parenthetical groups that embed raw metrics, innermost
+    # first, re-running until none remain (handles the one level of
+    # nesting a caller can wrap resource_assessment.py's reason in).
+    scrubbed = text
+    for _ in range(4):
+        next_scrubbed = re.sub(
+            r"\([^()]*\)",
+            lambda m: "" if _DEBUG_MARKER_PATTERN.search(m.group(0)) else m.group(0),
+            scrubbed,
+        )
+        if next_scrubbed == scrubbed:
+            break
+        scrubbed = next_scrubbed
+
+    scrubbed = re.sub(r"\s*;\s*", " ", scrubbed)
+    scrubbed = re.sub(r"\s{2,}", " ", scrubbed)
+    scrubbed = re.sub(r"\s+\.", ".", scrubbed)
+    scrubbed = scrubbed.strip()
+
+    for sentence in re.split(r"(?<=[.])\s+", scrubbed):
+        sentence = sentence.strip(" .")
+        if not sentence or _DEBUG_MARKER_PATTERN.search(sentence):
+            continue
+        bullets.append(sentence + ".")
+
+    if not bullets:
+        bullets.append("Resource load is currently elevated.")
+
+    return bullets
+
+
+def _build_benefit_bullets(benefit: str) -> list[str]:
+    """expected_benefit strings from recommendation_engine.py are always
+    already clean prose — this just splits them into bullet sentences."""
+    text = (benefit or "").strip()
+    bullets = [s.strip(" .") + "." for s in re.split(r"(?<=[.])\s+", text) if s.strip(" .")]
+    return bullets or ["No additional benefit information available."]
+
+
 def _render_ai_recommendation() -> None:
     """
-    Region 3 (intel flank, card 1, directly beside the map) — AI Tactical
-    Recommendation, as a command briefing rather than a report:
-    confidence lives in the panel's toolbar (set by the caller — see
-    render()). The body is one merged HTML block (label, headline,
-    merged Why/Benefit line) instead of three separate
-    st.caption()/st.markdown() calls, so there's no stacked inter-element
-    margin between them. No metric_card, no two-column reason/benefit
-    split, no repeated section headers.
+    Region 3 (intel flank, card 1, directly beside the map) — AI
+    Tactical Recommendation, redesigned as a scannable command-decision
+    card: a colored priority badge, the recommendation as the single
+    largest element, Reason and Expected Benefit as short bullet lists
+    instead of a dense paragraph, and AI Confidence as a labeled
+    progress bar (no metric_card, no raw backend/debug fields — see
+    _build_reason_bullets()).
     """
+    level = _ai_priority_level(AI_RECOMMENDATION)
+    reason_bullets = _build_reason_bullets(AI_RECOMMENDATION.get("reason", ""))
+    benefit_bullets = _build_benefit_bullets(AI_RECOMMENDATION.get("expected_benefit", ""))
+
+    reason_html = "".join(f"<div>• {html.escape(b)}</div>" for b in reason_bullets)
+    benefit_html = "".join(f"<div>• {html.escape(b)}</div>" for b in benefit_bullets)
+    divider = f'<div style="border-top:1px solid {COLOR_BORDER};margin:8px 0;"></div>'
+    label_style = f"font-size:0.70rem;letter-spacing:0.05em;color:{COLOR_TEXT_SECONDARY};"
+    body_style = f"font-size:0.82rem;line-height:1.5;color:{COLOR_TEXT_SECONDARY};margin:2px 0;"
+
     st.markdown(
-        f'<div style="font-size:0.75rem;letter-spacing:0.05em;color:{COLOR_TEXT_SECONDARY};">PRIORITY ACTION</div>'
-        f'<div style="font-weight:600;font-size:1rem;margin:2px 0 2px;">{html.escape(AI_RECOMMENDATION["recommendation"])}</div>'
-        f'<div style="font-size:0.80rem;line-height:1.45;color:{COLOR_TEXT_SECONDARY};">'
-        f'Why: {html.escape(AI_RECOMMENDATION["reason"])} &nbsp;→&nbsp; '
-        f'Benefit: {html.escape(AI_RECOMMENDATION["expected_benefit"])}'
-        '</div>',
+        f'{_priority_badge_html(level)}'
+        f'{divider}'
+        f'<div style="{label_style}">RECOMMENDATION</div>'
+        f'<div style="font-weight:700;font-size:1.15rem;line-height:1.3;margin:2px 0 0;">{html.escape(AI_RECOMMENDATION.get("recommendation", ""))}</div>'
+        f'{divider}'
+        f'<div style="{label_style}">REASON</div>'
+        f'<div style="{body_style}">{reason_html}</div>'
+        f'{divider}'
+        f'<div style="{label_style}">EXPECTED BENEFIT</div>'
+        f'<div style="{body_style}">{benefit_html}</div>'
+        f'{divider}'
+        f'<div style="{label_style}">AI CONFIDENCE</div>',
         unsafe_allow_html=True,
     )
+
+    confidence = AI_RECOMMENDATION.get("confidence") or 0.0
+    st.progress(min(max(confidence / 100, 0.0), 1.0))
+    st.caption(f"{confidence:.0f}%")
  
  
 def _get_filtered_mission_log_entries() -> list[dict]:
