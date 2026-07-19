@@ -1,18 +1,15 @@
 """
 dashboard.py
- 
-Dashboard page — rebuilt to fit approximately one to one-and-a-half laptop
-screens, per the approved layout:
- 
-    Row 1 — 6 KPI cards
-    Row 2 — Battlefield Evacuation Workflow (compact, single horizontal panel)
-    Row 3 — Mission Log | Battlefield Map (hero) | Asset Inventory
-    Row 4 — Simulation Controls | AI Tactical Recommendation | Triage Severity Chart
- 
-All values are hardcoded placeholders. No backend, simulation, service, or
-session-state wiring. Uses only st.container()/st.columns()/st.progress()/
-st.markdown()/st.write()/st.caption() plus the existing metric_card(),
-panel(), and buttons() components — no page-level CSS, no hardcoded colors.
+
+Dashboard page: operational snapshot for BMERMS.
+
+Layout: KPI row (6 cards), Battlefield Evacuation Workflow strip,
+Battlefield Map, and Asset Inventory.
+
+Data sources: dashboard_service (KPIs, evacuation workflow, asset
+inventory), facilities_service and resources_service (map inputs),
+and map_adapter/tactical_map for the Battlefield Map panel. All values
+are live, backend-derived data.
 """
  
 import streamlit as st

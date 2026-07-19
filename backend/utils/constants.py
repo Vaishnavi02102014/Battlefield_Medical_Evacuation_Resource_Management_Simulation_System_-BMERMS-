@@ -183,7 +183,7 @@ WEATHER_CONDITIONS: list[str] = ["Clear", "Overcast", "Rain", "Fog", "Storm"]
 VISIBILITY_LEVELS: list[str] = ["Good", "Moderate", "Poor", "Zero"]
  
 # --------------------------------------------------------------------------
-# RESOURCE FLEETS (fixed pool sizes for v1)
+# RESOURCE FLEETS (fixed pool sizes)
 # --------------------------------------------------------------------------
 AMBULANCE_FLEET_SIZE: int = 20
 HELICOPTER_FLEET_SIZE: int = 6
@@ -283,45 +283,32 @@ TRANSPORT_TIME: dict[str, dict[str, int]] = {
 }
  
 # --------------------------------------------------------------------------
-# VEHICLE INITIAL POSITIONS (Phase 6A.1)
+# VEHICLE INITIAL POSITIONS
 #
 # Backend-owned, deterministic starting position for each vehicle type.
-# Used ONLY at fleet-seeding time (database.init_db.seed_resource_fleets)
-# so every ambulance/helicopter row has a valid grid_x/grid_y the moment
-# it's created - well before its first dispatch. This exists so
-# resource_manager.py's dispatch-origin capture (Phase 6A) never reads a
-# NULL vehicle.grid_x/grid_y for a vehicle's very first trip.
+# Used only at fleet-seeding time (database.init_db.seed_resource_fleets)
+# so every ambulance/helicopter row has a valid grid_x/grid_y from the
+# moment it is created, ensuring resource_manager.py's dispatch-origin
+# capture never reads a NULL grid_x/grid_y on a vehicle's first trip.
 #
-# Deliberately backend-owned: resource_manager.py never imports this (or
-# anything else) directly - it only ever reads vehicle.grid_x/grid_y,
-# which this constant is used to initialize once, at seed time. This
-# module (utils/constants.py) is already the shared source of truth used
-# "across the simulation, database, and visualization layers" per this
-# file's own module docstring, so it - not a frontend module - is the
-# correct home for this value.
+# Deliberately backend-owned: resource_manager.py never imports this
+# constant directly - it only ever reads vehicle.grid_x/grid_y, which
+# this constant is used to initialize once, at seed time. This module
+# (utils/constants.py) is the shared source of truth used across the
+# simulation, database, and visualization layers, so it - not a
+# frontend module - is the correct home for this value.
 #
 # Depth follows the same MEDEVAC-doctrine reasoning as FACILITY_CONFIG
 # (front line y=2-5, RAP y=8, ADS y=25, HMV y=55, FDC y=85): ambulances
-# stage forward, helicopters stage further back. These coordinates are
-# also what the tactical map's Operational Staging Base markers render at
+# stage forward, helicopters stage further back. These coordinates also
+# match the tactical map's Operational Staging Base markers
 # (map_adapter.STAGING_BASE_LAYOUT): map_adapter.py imports this dict
 # directly for its "ambulance"/"helicopter" entries rather than
-# redefining the values, so a freshly seeded/released vehicle's backend
-# position always lines up with its visual staging-base marker with a
-# single source of truth. ("medical_team" has no entry here and keeps
-# its own presentation-only coordinate in map_adapter.py, since medical
-# teams have no travel/motion concept or backend grid_x/grid_y in this
-# data model.)
-# Values corrected to (5.0, 30.0) / (88.0, 52.0): the original Phase 6A.1
-# values here ((35.0, 11.0) / (85.0, 50.0)) were only an approximation and
-# had drifted from the actual staging-base positions rendered on the
-# tactical map (Phase 7A's overlap-free triangulation). Since map_adapter
-# now imports this dict as the single source of truth, this constant was
-# corrected to the values already visible on screen, rather than the
-# other way around - this keeps rendering pixel-identical while finally
-# making a vehicle's true backend dispatch origin match its visual
-# staging base exactly, closing a gap the previous phase intended but
-# didn't fully achieve.
+# redefining the values, so a freshly seeded or released vehicle's
+# backend position always lines up with its visual staging-base marker.
+# ("medical_team" has no entry here and keeps its own presentation-only
+# coordinate in map_adapter.py, since medical teams have no travel/motion
+# concept or backend grid_x/grid_y in this data model.)
 # --------------------------------------------------------------------------
 VEHICLE_INITIAL_POSITIONS: dict[str, dict[str, float]] = {
     "Ambulance": {"grid_x": 5.0, "grid_y": 30.0},

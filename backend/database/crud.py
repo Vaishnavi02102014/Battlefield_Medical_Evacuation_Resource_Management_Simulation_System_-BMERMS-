@@ -596,13 +596,12 @@ def dispatch_ambulance(
 ) -> None:
     """
     Mark an ambulance Dispatched with its release (ETA) time.
- 
-    dispatch_time/origin_grid_x/origin_grid_y are optional movement
-    metadata (Phase 6A) recording WHEN this specific trip departed and
-    WHERE from. They default to None (written as NULL) so any existing
-    caller that only passes release_time keeps working unchanged - this
-    is purely additive. Not used by any transport/dispatch decision;
-    read-only metadata for future movement visualization.
+
+    dispatch_time, origin_grid_x, and origin_grid_y are optional movement
+    metadata recording when this trip departed and the vehicle's position
+    at that moment. They default to None and are not used by any
+    transport or dispatch decision; they exist as read-only metadata for
+    movement visualization.
     """
     with get_connection() as conn:
         conn.execute(
@@ -628,13 +627,12 @@ def dispatch_helicopter(
 ) -> None:
     """
     Mark a helicopter Dispatched with its release (ETA) time.
- 
-    dispatch_time/origin_grid_x/origin_grid_y are optional movement
-    metadata (Phase 6A) recording WHEN this specific trip departed and
-    WHERE from. They default to None (written as NULL) so any existing
-    caller that only passes release_time keeps working unchanged - this
-    is purely additive. Not used by any transport/dispatch decision;
-    read-only metadata for future movement visualization.
+
+    dispatch_time, origin_grid_x, and origin_grid_y are optional movement
+    metadata recording when this trip departed and the vehicle's position
+    at that moment. They default to None and are not used by any
+    transport or dispatch decision; they exist as read-only metadata for
+    movement visualization.
     """
     with get_connection() as conn:
         conn.execute(

@@ -1,36 +1,32 @@
 """
 patients.py
-
-Patients page — Patient Registry reverted to a table-based layout
-(st.dataframe with native selection_mode="single-row"/on_select="rerun")
-after the tactical row-card version was not approved. Search, filters,
-sorting, and the casualty_id-based selection/default-fallback logic are
-unchanged from Phase 3 — only how the registry is drawn changed back.
-
-The table shows the same 10 columns as before (Casualty ID, Rank, Soldier
-Unit, Battle Sector, Injury Type, Severity, Priority, Assigned Facility,
-Status, Waiting Time), with semantic color on Severity/Priority/Status via
+ 
+Patients page: Patient Registry (searchable/filterable/sortable table,
+st.dataframe with single-row selection), Patient Detail panel, and
+Current Treatment panel.
+ 
+The registry shows 10 columns (Casualty ID, Rank, Soldier Unit, Battle
+Sector, Injury Type, Severity, Priority, Assigned Facility, Status,
+Waiting Time), with semantic color on Severity/Priority/Status via
 pandas Styler (_style_registry_table).
-
+ 
 Selection is tracked by casualty_id in
-st.session_state["patients_selected_casualty_id"], with the same
-highest-operational-priority fallback (Priority, then Severity, then
-oldest Arrival Time) when nothing valid is selected, so it still survives
-search/filter/sort changes and still selects the correct patient on first
-load — Streamlit's dataframe selection has no supported way to
-pre-highlight a row without a user click, so the row itself won't
-visually light up until clicked, but Patient Detail/Current Treatment
-already reflect the correct default patient from the first render.
-
-KPI Summary and Patient Distribution are unchanged — both still read from
-the full, unfiltered dataset.
+st.session_state["patients_selected_casualty_id"], with a fallback
+(highest Priority, then Severity, then oldest Arrival Time) applied
+when nothing is currently selected, so Patient Detail and Current
+Treatment always reflect a valid patient even before a user clicks a row.
+ 
+KPI Summary and Patient Distribution read from the full, unfiltered
+dataset.
+ 
+Data source: services.patients_service exclusively.
 """
-
+ 
 from __future__ import annotations
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-
+ 
 from components.metric_card import metric_card
 from components.panel import panel
 from services.patients_service import (
@@ -41,7 +37,7 @@ from services.patients_service import (
     get_queue_entry,
     get_latest_treatment,
 )
-
+ 
 # Same accent hex values Facilities' console design uses, so badges/text
 # colors match exactly across both pages.
 _ACCENT = {
@@ -50,7 +46,7 @@ _ACCENT = {
     "danger": "#ef5959",
     "info": "#7aa7ff",
 }
-
+ 
 SEVERITY_ACCENT: dict[str, str] = {
     "Critical": "danger", "Serious": "warning", "Moderate": "info", "Mild": "primary",
 }
@@ -63,26 +59,53 @@ STATUS_ACCENT: dict[str, str] = {
     "Recovered": "primary",
     "Returned To Duty": "primary",
 }
-
+ 
 # Operational (not alphabetical) ordering for sort options.
 PRIORITY_ORDER: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2, "P3": 4}
 SEVERITY_ORDER: dict[str, int] = {"Critical": 0, "Serious": 1, "Moderate": 2, "Mild": 3}
 SORT_OPTIONS: tuple[str, ...] = ("Priority", "Severity", "Arrival Time", "Waiting Time")
-
-
+ 
+ 
 def _arrival_time_sort_key(arrival_time: str) -> float:
     """
-    Best-effort chronological key for the mock data's arrival_time
-    strings, which mix same-day 'HH:MM' values with relative phrases
-    ('yesterday ...', 'N days ago') rather than a single parseable
-    timestamp format. Once the real backend supplies a proper timestamp
-    for Casualty.arrival_time, this reduces to ordinary datetime
-    comparison and this helper can be simplified accordingly — the field
-    itself is unchanged either way, only how it's compared for sorting.
-
+    Chronological sort key for Casualty.arrival_time strings.
+ 
+    Primary format (the live backend's actual format): "YYYY-MM-DD HH:MM"
+    (see backend/simulation/decision_engine.py). Parsed by splitting on
+    the date/time separator and each field's own delimiter, then combined
+    into one strictly increasing number via a fixed-radix encoding (each
+    field's multiplier exceeds that field's maximum valid value: 13 for
+    month, 32 for day, 24 for hour, 60 for minute). This sorts identically
+    to true chronological order without needing calendar-aware arithmetic
+    or a datetime import.
+ 
+    Backwards-compatible fallbacks, tried only when the primary format
+    does not parse, in oldest-to-most-recent order: "N days ago",
+    "yesterday", then a bare "HH:MM" same-day value - unchanged from the
+    original mock-data handling. These occupy a small, fixed numeric
+    range that is always lower (older) than any real "YYYY-MM-DD HH:MM"
+    value, so a mix of legacy and live values still sorts sensibly: all
+    legacy values first (oldest), then live values in true chronological
+    order.
+ 
+    Any value matching none of the above returns 0.0.
+ 
     Lower = older = sorts first for "oldest first".
     """
     text = arrival_time.strip().lower()
+ 
+    if "-" in text and ":" in text:
+        date_part, sep, time_part = text.partition(" ")
+        if sep and date_part.count("-") == 2 and time_part.count(":") == 1:
+            try:
+                year_s, month_s, day_s = date_part.split("-")
+                hour_s, minute_s = time_part.split(":")
+                year, month, day = int(year_s), int(month_s), int(day_s)
+                hour, minute = int(hour_s), int(minute_s)
+                return float((((year * 13 + month) * 32 + day) * 24 + hour) * 60 + minute)
+            except ValueError:
+                pass
+ 
     if "days ago" in text:
         digits = "".join(ch for ch in text if ch.isdigit())
         days = int(digits) if digits else 1
@@ -96,22 +119,22 @@ def _arrival_time_sort_key(arrival_time: str) -> float:
         except ValueError:
             return 0.0
     return 0.0
-
-
+ 
+ 
 def _waiting_time_sort_key(waiting_time: float | None) -> tuple[int, float]:
     """Highest waiting time first; casualties with no queue entry sort last."""
     if waiting_time is None:
         return (1, 0.0)
     return (0, -waiting_time)
-
-
+ 
+ 
 def _format_waiting_time(minutes: float | None) -> str:
     """Human-readable waiting time, e.g. 18.0 -> '18 min'. Presentation only — the raw value from QueueEntry.waiting_time is untouched."""
     if minutes is None:
         return "—"
     return f"{int(round(minutes))} min"
-
-
+ 
+ 
 def _inject_console_css() -> None:
     """Identical console styling to Facilities' page-local CSS injection — same class names, same accent values."""
     st.markdown(
@@ -136,7 +159,7 @@ def _inject_console_css() -> None:
             background-color: rgba(61,220,132,0.12) !important;
             box-shadow: inset 3px 0 0 #3ddc84;
         }
-
+ 
         .console-wrap { padding-top: 2px; }
         .console-strip {
             display: flex;
@@ -158,7 +181,7 @@ def _inject_console_css() -> None:
             border: 1px solid currentColor;
             white-space: nowrap;
         }
-
+ 
         .console-blocks {
             display: flex;
             gap: 14px;
@@ -204,34 +227,34 @@ def _inject_console_css() -> None:
         """,
         unsafe_allow_html=True,
     )
-
-
+ 
+ 
 def _render_kpi_row() -> None:
     casualties = get_all_casualties()
-
+ 
     metrics = [
         ("IN TREATMENT", "Under Treatment"),
         ("WAITING", "Waiting"),
         ("RECOVERED", "Recovered"),
         ("RETURNED TO DUTY", "Returned To Duty"),
     ]
-
+ 
     columns = st.columns(4)
-
+ 
     for column, (title, backend_status) in zip(columns, metrics):
         count = sum(
             1 for c in casualties
             if c["status"] == backend_status
         )
-
+ 
         with column:
             metric_card(
                 title=title,
                 value=count,
                 color=STATUS_ACCENT.get(backend_status, "info"),
             )
-
-
+ 
+ 
 def _style_registry_table(dataframe: pd.DataFrame):
     """Semantic color on Severity/Priority/Status — bold, colored cell text via pandas Styler."""
     def _colored(accent_map: dict[str, str]):
@@ -239,15 +262,15 @@ def _style_registry_table(dataframe: pd.DataFrame):
             color = _ACCENT.get(accent_map.get(value, "info"), _ACCENT["info"])
             return f"color:{color}; font-weight:700;"
         return _style
-
+ 
     return (
         dataframe.style
         .map(_colored(SEVERITY_ACCENT), subset=["Severity"])
         .map(_colored(PRIORITY_ACCENT), subset=["Priority"])
         .map(_colored(STATUS_ACCENT), subset=["Status"])
     )
-
-
+ 
+ 
 def _default_priority_casualty(casualties: list[dict]) -> dict | None:
     """Highest operational priority patient: Priority, then Severity, then oldest Arrival Time — not simply the first record."""
     if not casualties:
@@ -260,8 +283,8 @@ def _default_priority_casualty(casualties: list[dict]) -> dict | None:
             _arrival_time_sort_key(c["arrival_time"]),
         ),
     )
-
-
+ 
+ 
 def _apply_search_and_filters(
     casualties: list[dict], search_text: str, severity_filter: str, status_filter: str, facility_filter: str,
 ) -> list[dict]:
@@ -284,8 +307,8 @@ def _apply_search_and_filters(
             or needle in c["injury_type"].lower()
         ]
     return results
-
-
+ 
+ 
 def _apply_sort(casualties: list[dict], sort_by: str) -> list[dict]:
     if sort_by == "Priority":
         return sorted(casualties, key=lambda c: PRIORITY_ORDER.get(c["priority"], 99))
@@ -299,8 +322,8 @@ def _apply_sort(casualties: list[dict], sort_by: str) -> list[dict]:
             return _waiting_time_sort_key(queue_entry["waiting_time"] if queue_entry else None)
         return sorted(casualties, key=key)
     return casualties
-
-
+ 
+ 
 def _render_patient_registry() -> dict | None:
     """Row 2, left — functional search/filters/sort + native table single-row selection. Returns the selected casualty, or None on empty results."""
     search_col, severity_col, status_col, facility_col, sort_col = st.columns([2, 1, 1, 1, 1])
@@ -334,16 +357,16 @@ def _render_patient_registry() -> dict | None:
             "Sort by", options=SORT_OPTIONS,
             key="patients_sort_by", label_visibility="collapsed",
         )
-
+ 
     casualties = get_all_casualties()
     filtered = _apply_search_and_filters(casualties, search_text, severity_filter, status_filter, facility_filter)
     filtered = _apply_sort(filtered, sort_by)
-
+ 
     if not filtered:
         st.caption("No patients match the current search and filters.")
         st.session_state["patients_selected_casualty_id"] = None
         return None
-
+ 
     records = []
     for c in filtered:
         queue_entry = get_queue_entry(c["casualty_id"])
@@ -360,7 +383,7 @@ def _render_patient_registry() -> dict | None:
             "Waiting Time": _format_waiting_time(queue_entry["waiting_time"] if queue_entry else None),
         })
     dataframe = pd.DataFrame.from_records(records)
-
+ 
     # Native Streamlit 1.51 table row selection
     # (selection_mode="single-row"/on_select="rerun") — lightweight,
     # no custom click-handling. Selection is tracked by casualty_id
@@ -371,11 +394,11 @@ def _render_patient_registry() -> dict | None:
         hide_index=True, use_container_width=True, height=320,
         selection_mode="single-row", on_select="rerun", key="patients_registry_table",
     )
-
+ 
     selected_rows = selection.selection.rows if hasattr(selection, "selection") else []
     if selected_rows:
         st.session_state["patients_selected_casualty_id"] = filtered[selected_rows[0]]["casualty_id"]
-
+ 
     # Selection is tracked by casualty_id (not raw row index) precisely
     # so it survives search/filter/sort changes cleanly: if the
     # previously selected patient is filtered out (or on first load,
@@ -392,20 +415,20 @@ def _render_patient_registry() -> dict | None:
         default_casualty = _default_priority_casualty(filtered)
         selected_id = default_casualty["casualty_id"] if default_casualty else None
         st.session_state["patients_selected_casualty_id"] = selected_id
-
+ 
     return next((c for c in filtered if c["casualty_id"] == selected_id), None)
-
-
+ 
+ 
 def _render_patient_distribution() -> None:
     """Row 2, right — Severity Distribution as a compact donut, computed from the same loaded casualty dataset."""
     casualties = get_all_casualties()
     severities = [c["severity"] for c in casualties]
     counts = pd.Series(severities).value_counts()
-
+ 
     labels = list(counts.index)
     values = list(counts.values)
     colors = [_ACCENT[SEVERITY_ACCENT.get(label, "info")] for label in labels]
-
+ 
     figure = go.Figure(data=[go.Pie(
         labels=labels, values=values, hole=0.68,
         marker=dict(colors=colors, line=dict(color="#0B1522", width=2)),
@@ -424,8 +447,8 @@ def _render_patient_distribution() -> None:
         )],
     )
     st.plotly_chart(figure, use_container_width=True)
-
-
+ 
+ 
 def _console_row(label: str, value) -> str:
     display_value = value if value not in (None, "") else "—"
     return (
@@ -434,8 +457,8 @@ def _console_row(label: str, value) -> str:
         f'<span class="console-row-value">{display_value}</span>'
         f'</div>'
     )
-
-
+ 
+ 
 def _render_patient_detail(casualty: dict | None) -> None:
     """
     Row 3 — one compact operating picture split into STATUS / CLINICAL /
@@ -447,17 +470,17 @@ def _render_patient_detail(casualty: dict | None) -> None:
     if casualty is None:
         st.caption("No patient selected.")
         return
-
+ 
     queue_entry = get_queue_entry(casualty["casualty_id"])
     waiting_time = _format_waiting_time(queue_entry["waiting_time"] if queue_entry else None)
     treatment = get_latest_treatment(casualty["casualty_id"])
-
+ 
     status_hex = _ACCENT.get(STATUS_ACCENT.get(casualty["status"], "info"), _ACCENT["info"])
     severity_hex = _ACCENT.get(SEVERITY_ACCENT.get(casualty["severity"], "info"), _ACCENT["info"])
     priority_hex = _ACCENT.get(PRIORITY_ACCENT.get(casualty["priority"], "info"), _ACCENT["info"])
-
+ 
     st.markdown('<div class="console-wrap">', unsafe_allow_html=True)
-
+ 
     st.markdown(
         f'<div class="console-strip">'
         f'<div><span class="console-name">{casualty["casualty_id"]}</span>'
@@ -466,7 +489,7 @@ def _render_patient_detail(casualty: dict | None) -> None:
         f'</div>',
         unsafe_allow_html=True,
     )
-
+ 
     status_rows = (
         _console_row("Casualty ID", casualty["casualty_id"])
         + _console_row("Rank", casualty["rank"])
@@ -474,14 +497,14 @@ def _render_patient_detail(casualty: dict | None) -> None:
         + _console_row("Age", casualty["age"])
         + _console_row("Status", f'<span style="color:{status_hex};">{casualty["status"]}</span>')
     )
-
+ 
     clinical_rows = (
         _console_row("Injury Type", casualty["injury_type"])
         + _console_row("Severity", f'<span style="color:{severity_hex};">{casualty["severity"]}</span>')
         + _console_row("Priority", f'<span style="color:{priority_hex};">{casualty["priority"]}</span>')
         + _console_row("Medical Officer", casualty["medical_officer"])
     )
-
+ 
     logistics_rows = (
         _console_row("Assigned Facility", get_facility_name(casualty["assigned_facility"]))
         + _console_row("Bed ID", get_bed_number(casualty["bed_id"]))
@@ -492,14 +515,14 @@ def _render_patient_detail(casualty: dict | None) -> None:
         + _console_row("Expected Recovery", casualty["expected_recovery"])
         + _console_row("Return to Duty", casualty["return_to_duty"])
     )
-
+ 
     treatment_rows = (
         _console_row("Treatment Start", treatment["treatment_start"] if treatment else None)
         + _console_row("Treatment End", treatment["treatment_end"] if treatment else None)
         + _console_row("Treatment Duration", treatment["treatment_duration"] if treatment else None)
         + _console_row("Current Status", treatment["current_status"] if treatment else None)
     )
-
+ 
     st.markdown(
         f'<div class="console-blocks">'
         f'<div class="console-block" style="flex:1.1 1 0;">'
@@ -513,20 +536,20 @@ def _render_patient_detail(casualty: dict | None) -> None:
         f'</div>',
         unsafe_allow_html=True,
     )
-
+ 
     st.markdown('</div>', unsafe_allow_html=True)
-
-
+ 
+ 
 def render() -> None:
     """Render the Patients page: KPI row, Registry | Distribution, Detail."""
     _inject_console_css()
     _render_kpi_row()
-
+ 
     st.markdown(
         "<div style='height:12px'></div>",
         unsafe_allow_html=True,
     )
-
+ 
     registry_col, distribution_col = st.columns([2, 1])
     with registry_col:
         facility_count = len(get_all_casualties())
@@ -535,6 +558,6 @@ def render() -> None:
     with distribution_col:
         with panel("Patient Distribution"):
             _render_patient_distribution()
-
+ 
     with panel("Patient Detail"):
         _render_patient_detail(selected_casualty)

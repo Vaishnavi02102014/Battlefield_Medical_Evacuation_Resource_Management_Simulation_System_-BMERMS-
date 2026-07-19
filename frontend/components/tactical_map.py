@@ -1,44 +1,23 @@
 """
 tactical_map.py
- 
-Dedicated, reusable Battlefield Map component for the Simulation page.
-Kept out of simulation.py per "avoid putting all map logic inside
-simulation.py... create a dedicated reusable Battlefield Map component."
- 
-ARCHITECTURE — provider / renderer split
+
+Battlefield Map component, used by the Dashboard and Simulation pages.
+
+Architecture — provider / renderer split
 -----------------------------------------------------------------------
-get_map_data(...)      the ONE provider — now defined in
-                        components/map_adapter.py and imported here.
-                        Takes simulation.py's existing mock state
-                        (FACILITY_STATUS, RESOURCE_STATUS,
-                        MISSION_LOG_ENTRIES) and returns a single MapData
-                        object with every coordinate already resolved.
-                        This is the ONLY function that knows where data
-                        comes from.
+get_map_data(...)       the provider, defined in components/map_adapter.py
+                         and imported here. Takes live backend data and
+                         returns a single MapData object with every
+                         coordinate resolved.
 render_tactical_map(map_data)
-                        the renderer, defined in this file. Takes ONE
-                        MapData object and draws it. It has no idea
-                        whether that MapData was built from frontend mock
-                        state or, later, from live backend queries — it
-                        just renders whatever it's given. When backend
-                        integration happens, only map_adapter.py's
-                        get_map_data() (or a new provider with the same
-                        MapData return shape) needs to change; this
-                        function does not.
- 
-Nothing in this file duplicates a "simulation concept" that already
-exists in simulation.py: incidents are DERIVED from MISSION_LOG_ENTRIES's
-own "Incident"-category entries (not a second, separately-maintained
-incident list), and facility/resource identity, names, and stats are
-read directly from FACILITY_STATUS/RESOURCE_STATUS, never copied.
- 
-Scope for this phase: interactive map, Facilities, Incident, Ambulances,
-Helicopters, Medical Teams, Operational Staging Bases (Phase 5B),
-layer control, popups, an in-map legend, and a Center Map control. NOT
-this phase: Evacuation Routes, live tracking, animation, or backend
-integration — still entirely frontend-only.
- 
-No backend imports of any kind.
+                         the renderer, defined in this file. Takes one
+                         MapData object and draws it; has no knowledge of
+                         where that data came from. This file has no
+                         backend imports.
+
+Renders Facilities, Incidents, Ambulances, Helicopters, Medical Teams,
+and Operational Staging Bases, with layer control, popups, an in-map
+legend, and a Center Map control.
 """
  
 from __future__ import annotations
@@ -51,20 +30,7 @@ from streamlit_folium import st_folium
 from components.buttons import secondary_button
 from components.map_constants import FRONTEND_MAP_LAYOUT
 from components.map_adapter import MapData, get_map_data
- 
- 
-# --------------------------------------------------------------------------
-# COLOR PALETTE (Phase 7A: consolidated to hex)
-#
-# Previously each layer had a Folium *named* color (feeding folium.Icon)
-# PLUS a separate "approximate hex" swatch for the legend, which could
-# drift out of sync. Now that markers are custom DivIcon badges (see
-# _build_badge_icon()/_build_staging_base_icon() below), any hex value
-# works directly as a marker's fill color - so each layer has exactly
-# ONE color value, used for both the marker AND the legend swatch. This
-# is the single biggest lever for goal 6 (visual consistency): one
-# source of truth per color, not two.
-# --------------------------------------------------------------------------
+
 LAYER_COLOR: dict[str, str] = {
     "facility": "#2A81CB", "incident": "#CB2B3E", "ambulance": "#2AAD27",
     "helicopter": "#CB8427", "medical_team": "#3D6570",
@@ -100,16 +66,6 @@ CASUALTY_SEVERITY_COLOR: dict[str, str] = {
     "Minor": "#8FBC6B", "Moderate": "#CB8427", "Severe": "#E0774F", "Critical": "#8B1E1E",
 }
 CASUALTY_ICON_SYMBOL: str = "plus"
-
-# Operational Staging Base markers (Phase 5B, refined 5C/7A) - aggregate
-# reserve infrastructure. Phase 7A gives staging bases their own DISTINCT
-# MARKER SHAPE (a diamond badge - see _build_staging_base_icon()), not
-# just a different color/icon glyph on the same teardrop pin every other
-# layer uses. That shape difference is what actually solves "staging
-# bases look too similar to medical facilities": the previous fix (black
-# + a unique "flag" glyph) still used the identical pin silhouette
-# Facilities use, so at a glance - before reading the glyph - they read
-# as "yet another pin." A diamond never does.
 STAGING_BASE_COLOR: str = "#2B2B2B"
 STAGING_BASE_ICON_SYMBOL: str = "flag"
 
@@ -122,12 +78,6 @@ STAGING_BASE_STATUS_COLOR: dict[str, str] = {
     "READY": "#8FBC6B", "DEPLETED": "#8B1E1E",
 }
 
-
-# Evacuation route styling by transport mode - color + dash pattern so
-# Ground/Air are distinguishable even without hovering for the popup.
-# Phase 7A: routes are now the lowest tier in the visual hierarchy (see
-# MARKER_SIZE_PX/z-order below) - thinner and slightly translucent so
-# they read as background connective context, not competing with markers.
 ROUTE_TRANSPORT_STYLE: dict[str, dict] = {
     "Ground": {"color": "#4A6FA5", "dash_array": None},
     "Air": {"color": "#8B5FBF", "dash_array": "8,6"},
@@ -135,24 +85,6 @@ ROUTE_TRANSPORT_STYLE: dict[str, dict] = {
 ROUTE_LEGEND_COLOR: dict[str, str] = {"Ground": "#4A6FA5", "Air": "#8B5FBF"}
 ROUTE_LINE_WEIGHT: float = 2.0
 ROUTE_LINE_OPACITY: float = 0.65
-
-# --------------------------------------------------------------------------
-# MARKER SIZE HIERARCHY (Phase 7A, goals 1 & 2)
-#
-# THE single place the map's entire visual hierarchy is expressed as
-# numbers. Every _add_*_layer() function below reads its marker size from
-# here - nothing hardcodes its own size - so the hierarchy is tunable in
-# one spot and every layer stays proportionally consistent (goal 6).
-#
-# Priority order (largest -> smallest), matching the requested hierarchy:
-#   Active Incidents > Casualties (severity-scaled) > Moving Vehicles
-#   (Ambulances/Helicopters - everything currently rendered IS actively
-#   dispatched, since idle units are hidden per Phase 5A) > Medical
-#   Teams (facility-support resource, not a moving vehicle, so sized
-#   nearer Facilities) > Medical Facilities > Operational Staging Bases.
-# Routes carry no marker size - see ROUTE_LINE_WEIGHT/OPACITY above,
-# their own de-emphasis mechanism as a line layer rather than a point.
-# --------------------------------------------------------------------------
 MARKER_SIZE_PX: dict[str, int] = {
     "incident": 44,
     "casualty_critical": 36,
@@ -169,24 +101,6 @@ MARKER_SIZE_PX: dict[str, int] = {
 # ratio, applied everywhere, rather than each layer picking its own.
 ICON_GLYPH_RATIO: float = 0.44
 
-# --------------------------------------------------------------------------
-# INCIDENT STATE STYLE (Phase 7D)
-#
-# THE single place Active vs. Resolved visual treatment is defined for
-# incidents. The provider (map_adapter.py) already computes
-# incident["incident_state"] (Phase 7B) - this renderer CONSUMES that
-# value only; it never recomputes or infers it from casualty data itself.
-#
-# Active keeps today's baseline (full "incident" size tier, full color,
-# full opacity, a bold border) - already the largest, most emphatic
-# marker on the map per the Phase 7A hierarchy, so no change is needed
-# there to "attract attention." Resolved is deliberately de-emphasized
-# via several subtle, non-animated cues at once (smaller size, a muted
-# same-family color rather than a new bright one, reduced opacity, a
-# thinner border) so it visibly recedes into operational background
-# context without disappearing or introducing any civilian-bright color,
-# flashing, or animation.
-# --------------------------------------------------------------------------
 INCIDENT_STATE_STYLE: dict[str, dict] = {
     "Active": {
         "size_px": MARKER_SIZE_PX["incident"],
@@ -203,30 +117,7 @@ INCIDENT_STATE_STYLE: dict[str, dict] = {
         "border_color": "#3A2426",
     },
 }
- 
- 
-# --------------------------------------------------------------------------
-# MARKER BUILDERS (Phase 7A)
-#
-# Two shape families, deliberately different, per goal 4:
-#   - _build_badge_icon(): a circular badge. Used by every "actor/point
-#     of interest" layer - Facilities, Incidents, Casualties, Ambulances,
-#     Helicopters, Medical Teams. This is the shared, consistent family
-#     goal 6 asks for: one shape, one size mechanism, one glyph-to-badge
-#     ratio (ICON_GLYPH_RATIO), across all six of those layers.
-#   - _build_staging_base_icon(): a diamond badge (a square rotated 45
-#     degrees, with the inner glyph counter-rotated so it stays upright).
-#     Used ONLY by Operational Staging Bases, so they read as permanent
-#     support infrastructure at a glance - a different silhouette, not
-#     just a different color, which is what actually fixes goal 4.
-#
-# Both replace folium.Icon() (Leaflet's AwesomeMarkers), which renders
-# every marker at one fixed pixel size with no size parameter at all -
-# the reason goal 2 (marker sizing) requires this change. Popups and
-# tooltips attach to folium.Marker exactly as before; only the `icon=`
-# argument changes from an Icon to a DivIcon.
-# --------------------------------------------------------------------------
- 
+  
 def _build_badge_icon(icon_symbol: str, color: str, size_px: int) -> folium.DivIcon:
     """Circular badge marker: a Font Awesome glyph centered on a solid-color circle, sized in pixels."""
     icon_px = round(size_px * ICON_GLYPH_RATIO)
@@ -272,18 +163,6 @@ def _build_staging_base_icon(icon_symbol: str, color: str, size_px: int) -> foli
  
  
 def _build_incident_icon(icon_symbol: str, style: dict) -> folium.DivIcon:
-    """
-    Circular badge for Active/Resolved incidents (Phase 7D) - a dedicated
-    builder, deliberately separate from _build_badge_icon(), so this
-    phase's opacity/border-weight differentiation can never affect
-    Facilities/Casualties/Vehicles/Medical Teams, which keep using
-    _build_badge_icon() completely unchanged.
- 
-    `style` is one entry from INCIDENT_STATE_STYLE - size, color, opacity,
-    and border weight all come from there, never computed here. This
-    function only turns that already-decided style into a marker; it does
-    not decide Active vs. Resolved itself.
-    """
     size_px = style["size_px"]
     icon_px = round(size_px * ICON_GLYPH_RATIO)
     html = (
@@ -444,15 +323,6 @@ def _add_facilities_layer(feature_group: folium.FeatureGroup, facilities: list[d
 
 
 def _add_incidents_layer(feature_group: folium.FeatureGroup, incidents: list[dict]) -> None:
-    """
-    Active Incidents. Phase 7D: visual treatment now depends on the
-    provider-supplied `incident["incident_state"]` (Phase 7B) - this
-    function CONSUMES that value only, via INCIDENT_STATE_STYLE; it never
-    computes or infers Active/Resolved itself. Falls back to the Active
-    style if `incident_state` is missing or an unrecognized value (never
-    crash, and default toward MORE visible rather than silently hiding an
-    incident that should have attention).
-    """
     for incident in incidents:
         incident_state = incident.get("incident_state", "Active")
         style = INCIDENT_STATE_STYLE.get(incident_state, INCIDENT_STATE_STYLE["Active"])
@@ -474,14 +344,6 @@ def _add_incidents_layer(feature_group: folium.FeatureGroup, incidents: list[dic
 
 
 def _add_units_layer(feature_group: folium.FeatureGroup, units: list[dict], unit_type_label: str, layer_key: str) -> None:
-    """
-    Ambulances/Helicopters/Medical Teams. Ambulances and Helicopters use
-    the "vehicle" size tier (everything rendered here is actively
-    Dispatched, per Phase 5A - a moving vehicle, sized accordingly).
-    Medical Teams are a facility-support resource, not a moving vehicle,
-    so they use their own, slightly smaller "medical_team" tier - closer
-    to Facilities than to Ambulances/Helicopters in visual weight.
-    """
     size_px = MARKER_SIZE_PX["medical_team"] if layer_key == "medical_team" else MARKER_SIZE_PX["vehicle"]
     for unit in units:
         status_color = RESOURCE_STATUS_COLOR.get(unit["status"])
@@ -499,23 +361,6 @@ def _add_units_layer(feature_group: folium.FeatureGroup, units: list[dict], unit
 
 
 def _add_staging_bases_layer(feature_group: folium.FeatureGroup, staging_bases: list[dict]) -> None:
-    """
-    Draws the aggregate Operational Staging Base markers (Phase 5B,
-    presentation refined 5C/7A) - reserve-capacity indicators, NOT
-    individual vehicles.
-
-    Operational Status (READY/DEPLETED) is a pure display label derived
-    here, at render time, from the already-computed available_count -
-    it is NOT a new count and does not change what "available" means;
-    it only decides which word to print for a count of zero vs. non-zero.
-    All other content (label, subtitle, count, position) is rendered
-    exactly as the provider computed it; no business logic lives here,
-    matching every other _add_*_layer() function in this renderer.
-
-    Uses _build_staging_base_icon() (diamond shape) rather than
-    _build_badge_icon() (circle) - the deliberate shape difference from
-    every other layer that solves goal 4.
-    """
     for base in staging_bases:
         status_word = "READY" if base["available_count"] > 0 else "DEPLETED"
         status_color = STAGING_BASE_STATUS_COLOR[status_word]
@@ -578,19 +423,6 @@ def render_tactical_map(
     map_data: MapData,
     mode: str = "simulation",
 ) -> None:
-    """
-    The renderer. Draws exactly what `map_data` contains - Facilities,
-    Incident, Ambulances, Helicopters, Medical Teams, Operational Staging
-    Bases layers, a layer control, marker popups, an embedded legend, and
-    a Center Map control. Has no knowledge of where map_data came from.
-
-    Phase 7A: marker size and z-order now express a deliberate visual
-    hierarchy (Active Incidents > Casualties > Moving Vehicles > Medical
-    Teams > Medical Facilities > Operational Staging Bases > Routes) -
-    see MARKER_SIZE_PX and the `layers` list below. This is purely a
-    presentation choice; map_data's contents and this function's inputs
-    are unchanged.
-    """
     if mode in ("simulation", "dashboard"):
         counter_key = f"{mode}_tactical_map_reset_counter"
         st.session_state.setdefault(
@@ -664,14 +496,6 @@ def render_tactical_map(
             map_data.routes,
         )
  
-    # Phase 7A (goal 3): z-order is simply "the order FeatureGroups are
-    # added to the map" - Leaflet stacks later-added markers on top of
-    # earlier ones. This list is deliberately ordered BOTTOM -> TOP to
-    # match the requested visual hierarchy, so higher-priority markers
-    # are never hidden beneath lower-priority ones: Routes (background
-    # linework) -> Operational Staging Bases -> Medical Facilities ->
-    # Medical Teams -> Ambulances -> Helicopters -> Casualties ->
-    # Active Incidents (always topmost, per goal 1's priority order).
     layers = []
 
     if mode == "simulation":

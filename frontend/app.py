@@ -47,7 +47,6 @@ if "simulation_initialized" not in st.session_state:
     crud.reset_simulation_data()
 
     st.session_state.mission_log = deque(maxlen=200)
-    st.session_state.setdefault("analytics_history", [])
     st.session_state.setdefault("live_map_state", {})
 
     st.session_state.simulation_initialized = True

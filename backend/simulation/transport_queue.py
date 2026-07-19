@@ -1,7 +1,7 @@
 """
 transport_queue.py
 
-Runtime-only transport queue for Version 2 of the evacuation simulation.
+Runtime-only transport queue for the evacuation simulation.
 
 This module holds casualties that have been triaged (severity + destination
 facility already decided by decision_engine) but have NOT yet had a vehicle
@@ -15,7 +15,7 @@ Deliberately excluded from this module, per architectural decision:
     - No dispatch logic, no vehicle-selection logic, no severity->facility
       mapping logic. This module only stores and retrieves queue entries in
       FIFO order; deciding WHICH vehicle to assign, or WHEN to pop an entry,
-      is entirely the responsibility of resource_manager.py in a later phase.
+      is entirely the responsibility of resource_manager.py.
 
 Storage:
     Backed by Streamlit's st.session_state when running inside a Streamlit

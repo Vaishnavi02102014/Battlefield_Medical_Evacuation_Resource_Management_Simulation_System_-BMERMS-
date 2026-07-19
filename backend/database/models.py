@@ -170,8 +170,8 @@ class Ambulance:
     release_time: Optional[str]
     grid_x: float
     grid_y: float
-    dispatch_time: Optional[str] = None      # Phase 6A: when this vehicle's current trip departed
-    origin_grid_x: Optional[float] = None    # Phase 6A: where this vehicle's current trip departed from
+    dispatch_time: Optional[str] = None      # When this vehicle's current trip departed
+    origin_grid_x: Optional[float] = None    # Where this vehicle's current trip departed from
     origin_grid_y: Optional[float] = None
  
     @classmethod
@@ -188,8 +188,8 @@ class Helicopter:
     release_time: Optional[str]
     grid_x: float
     grid_y: float
-    dispatch_time: Optional[str] = None      # Phase 6A: when this vehicle's current trip departed
-    origin_grid_x: Optional[float] = None    # Phase 6A: where this vehicle's current trip departed from
+    dispatch_time: Optional[str] = None      # When this vehicle's current trip departed
+    origin_grid_x: Optional[float] = None    # Where this vehicle's current trip departed from
     origin_grid_y: Optional[float] = None
  
     @classmethod

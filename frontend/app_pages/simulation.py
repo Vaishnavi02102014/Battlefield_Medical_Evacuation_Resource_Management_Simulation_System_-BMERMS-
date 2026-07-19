@@ -1,135 +1,28 @@
 """
 simulation.py
- 
-Simulation page — Phases 1-8 (structural layout, visual refinement, the
-Manual Incident Generator, emoji-to-badge cleanup, the Streamlit 1.51.0
-HTML fix in shared components, the hierarchy/compaction pass, and the
-hero-layout row reorganization) are preserved. Phase 9 is a layout
-*architecture* pass, not another compression pass: it stops treating the
-page as a set of independent dashboard cards and treats it as regions of
-one Tactical Operations Center (TOC) screen, each with a single, clear
-purpose and a visual weight proportional to that purpose.
- 
-PHASE 9 — screen regions, not cards
------------------------------------------------------------------------
-Reading order top-to-bottom is now the operator's actual workflow, not
-an accident of where panels happened to fit:
- 
-    Region 1  Command console      Simulation Controls | Manual Incident
-                                    Generator — a slim instrument strip,
-                                    not a KPI dashboard. Status/Tick/
-                                    Elapsed collapse to one inline HUD
-                                    line (no metric_card — that card was
-                                    the single biggest source of wasted
-                                    vertical space here). Incident-type
-                                    buttons now render as one single row
-                                    (INCIDENT_TYPES_PER_ROW = all 7)
-                                    instead of two, since the strip is
-                                    wide enough, and the slider/Generate
-                                    row no longer carries an empty
-                                    alignment spacer line.
-    Region 2  Battlefield Map      the hero. HERO_ROW_RATIO keeps it at
-              (the hero)           ~70% of the workspace width, with the
-                                    threat/weather/visibility HUD line
-                                    collapsed from 3 st.columns() into
-                                    one flush inline string so it reads
-                                    as a status bar over the map, not a
-                                    row of its own mini-cards.
-    Region 3  Intel flank          AI Tactical Recommendation, then
-                                    Current Operation, then Transport
-                                    Queue (Phase 4) — beside the map,
-                                    each now a single merged HTML block
-                                    per panel instead of several separate
-                                    st.caption()/st.markdown() calls, so
-                                    there's no accumulated inter-element
-                                    margin between a label and its value.
-                                    Current Operation's metric_card
-                                    (Threat Level) is gone entirely,
-                                    replaced by one compact
-                                    Operation/Threat/Sector/Phase/
-                                    Weather/Visibility stack.
-    Region 4  Readiness band       Resource Status | Facility Status,
-                                    side by side. Both are single dense
-                                    HTML blocks per item (name, stats,
-                                    status, and — for facilities — a
-                                    thin custom occupancy bar built from
-                                    a styled <div> instead of
-                                    st.progress(), which carries its own
-                                    fixed widget padding). A hairline
-                                    inline border-bottom replaces
-                                    st.divider() between items, since a
-                                    full st.divider() element's margin is
-                                    disproportionate at this density.
-                                    Resource stat labels are the backend's
-                                    own vocabulary in full (Available /
-                                    Busy / Returning / Maintenance) —
-                                    Phase 8's abbreviations (Avail / RTB /
-                                    Maint) are reverted so the label text
-                                    stays a direct, unambiguous match to
-                                    the underlying field names.
-    Region 5  Mission feed         Live Mission Log, deliberately kept
-                                    narrower than the page (see
-                                    MISSION_LOG_WIDTH_RATIO) so a short
-                                    operational feed doesn't visually
-                                    claim the same width as the
-                                    Battlefield Map above it — full-width
-                                    was correct for a report, not a feed.
-                                    Compact rows, hairline separators
-                                    (same technique as Region 4) instead
-                                    of st.divider().
-    Region 6  Alert ribbon         Bottom Alert Bar, restyled as a row of
-                                    severity-colored chips (background
-                                    tint + left accent border per chip)
-                                    instead of plain bold-severity text
-                                    inside the panel border, so urgency
-                                    reads at a glance rather than being
-                                    inferred from a word.
- 
-Nothing structural changed below the surface: session_state keys,
-INCIDENT_TYPES / short-label mapping, _handle_generate_incident_click,
-button mechanics, the underlying RESOURCE_STATUS / FACILITY_STATUS /
-MISSION_LOG_ENTRIES / ALERTS data shapes, and the no-timer/no-random/
-no-autorefresh constraints are all identical to Phase 8. metric_card.py,
-panel.py, buttons.py, theme.py, and theme.css are unmodified — every
-visual change here comes from how this page arranges and feeds its own
-markup into components those files already exposed (panel()'s `toolbar`
-argument, resolve_color(), COLOR_TEXT_SECONDARY). metric_card() itself is
-no longer imported by this page: Phase 9 removes both call sites that
-used it (Simulation Controls' status, Current Operation's Threat Level),
-replacing them with the same inline-HTML technique already used
-elsewhere on this page, since a bordered/padded card is what made those
-two sections feel oversized in the first place.
- 
-No backend, simulation engine, database, or API integration. Everything
-below is one consistent mock simulation state (never random values, per
-spec) so every panel agrees with every other panel. Placeholder vocabulary
-(facility codes, treatment durations, fleet sizes, threat/weather/severity
-terms, incident types) is deliberately drawn from the same enums the
-backend (backend/Phase 1/constants.py, backend/Phase 1/config.py) already
-defines, so wiring this page to the real simulation later is a
-data-source swap, not a redesign. The Generate Incident button's handler
-(_handle_generate_incident_click) is a single, isolated function for the
-same reason — its body is the only thing that needs to change when real
-incident generation is wired in. Note for whoever wires Resource Status
-to the live backend: backend/Phase 1/constants.py's RESOURCE_STATUSES is
-["Available", "Dispatched", "Returning", "Under Maintenance"] — this
-page's "busy"/"maintenance" session/dict keys and their "Busy"/
-"Maintenance" display labels are the placeholder vocabulary requested for
-this UI pass; reconcile the "Busy"/"Dispatched" and "Maintenance"/"Under
-Maintenance" naming against whichever the real API response uses at
-integration time.
- 
-Uses only st.columns()/st.container()/st.markdown()/st.write()/st.caption()/
-st.selectbox()/st.slider()/st.code() plus the existing panel(),
-primary_button(), and secondary_button() components, plus
-utils.theme.resolve_color()/COLOR_TEXT_SECONDARY/COLOR_BORDER for the
-inline-HTML helpers below — no metric_card(), no st.progress(), no
-st.divider() (replaced by inline hairline borders baked into the same
-HTML block as each item, so there's one fewer Streamlit element's margin
-per separator), no st.error()/st.warning()/st.info(). Button/slider state is tracked in
-st.session_state purely for visual highlighting and UI acknowledgement —
-no timers, no auto-refresh, no background tasks, and the Manual Incident
-Generator never touches the Mission Log.
+
+Simulation page: the operator console for BMERMS. Drives the live
+simulation clock and tick loop, casualty generation, resource dispatch,
+treatment progression, and the transport queue, and renders the
+Battlefield Map, Mission Log, and resource/facility status for the
+current run.
+
+Layout regions, top to bottom:
+    1. Command console    Simulation Controls and the Manual Incident
+                           Generator.
+    2. Battlefield Map     the primary view, with a threat/weather/
+                           visibility status line above it.
+    3. Intel flank          AI Tactical Recommendation, Current
+                           Operation, and Transport Queue.
+    4. Readiness band       Resource Status and Facility Status.
+    5. Mission feed         Live Mission Log.
+    6. Alert ribbon         severity-colored alert chips.
+
+Data sources: backend.database.crud, backend.simulation.SimulationController,
+backend.simulation.transport_queue, and services.resources_service /
+services.facilities_service / services.ai_service. The autorefresh
+(streamlit_autorefresh) drives the tick loop while the simulation is
+running.
 """
  
 from __future__ import annotations
@@ -159,13 +52,12 @@ from utils.theme import (
 )
  
 # --------------------------------------------------------------------------
-# CONSISTENT MOCK SIMULATION STATE
-# One fixed scenario, referenced identically across every panel below —
-# never randomized. Facility codes/capacities/treatment durations match
-# backend/Phase 1/constants.py's FACILITY_CONFIG exactly; threat/weather/
-# visibility values are drawn from THREAT_LEVELS/WEATHER_CONDITIONS/
-# VISIBILITY_LEVELS; fleet totals match AMBULANCE_FLEET_SIZE (20),
-# HELICOPTER_FLEET_SIZE (6), and MEDICAL_TEAM_COUNT (16).
+# RESOURCE_STATUS / FACILITY_STATUS session-state seeding
+#
+# Initial values only, used to seed session_state on first render.
+# Resource Status and Facility Status are then kept current by
+# services.resources_service / services.facilities_service on every
+# rerun; Current Operation reads live simulation state via crud.
 # --------------------------------------------------------------------------
 DEFAULT_SIM_STATUS: str = "Stopped"
 DEFAULT_SIM_SPEED: int = 1
@@ -173,9 +65,6 @@ SIM_SPEEDS: list[int] = [1, 2, 5, 10]
  
 TICK_INTERVAL_MS: int = 2000
 CURRENT_TICK: str = "12,842"
- 
-# Current Operation: live from crud (Phase 6B.3).
-# Rebuilt on every render() call.
  
 def _build_current_operation() -> dict:
     operation = crud.get_active_operation()
@@ -230,8 +119,6 @@ def _build_resource_status() -> list[dict]:
  
 RESOURCE_STATUS: list[dict] = _build_resource_status()
  
-# Facility cards: live from facilities_service (Phase 6B.1).
-# Rebuilt on every render() call, same pattern as RESOURCE_STATUS.
  
 def _build_facility_status() -> list[dict]:
     return [
@@ -280,30 +167,10 @@ MISSION_LOG_ENTRIES: list[dict] = [
 # reporting page shows everything; an operational feed shows the latest
 # handful. "View All" (below) is the escape hatch to the rest.
 MISSION_LOG_FEED_SIZE: int = 4
- 
-# Column ratios. Three distinct ratios now (one per row shape) rather
-# than one ratio reused for two visually different rows — Phase 7 shared
-# a single ROW_COLUMN_RATIO across the map row and a second, separately
-# invoked columns() call purely to force alignment; Phase 8 has no such
-# alignment trick to preserve, since the command strip, hero row, and
-# support band are three genuinely different row shapes.
 COMMAND_STRIP_RATIO: list[int] = [1, 1]        # Simulation Controls | Manual Incident Generator
 HERO_ROW_RATIO: list[int] = [78, 22]             # Battlefield Map (~70%) | Intel flank (AI Rec, Current Operation)
 SUPPORT_ROW_RATIO: list[int] = [1, 1]          # Resource Status | Facility Status
-# Live Mission Log is a compact operational feed, not a report — it gets
-# side gutters so it reads as a narrower region than the Battlefield Map
-# above it, rather than claiming the full page width.
- 
-# --------------------------------------------------------------------------
-# MANUAL INCIDENT GENERATOR (UI-only)
-# Incident type labels overlap with backend/Phase 1/constants.py's
-# INCIDENT_TYPES where the wording matches exactly (Mortar Attack, Sniper
-# Fire, Ambush, Artillery Strike, Border Skirmish), so those five need no
-# translation when this panel is eventually wired to the real event
-# generator. "IED Blast" and "Convoy Attack" map to the backend's "IED
-# Explosion" and "Convoy Attack" respectively — noted here for whoever
-# does that wiring later.
-# --------------------------------------------------------------------------
+
 INCIDENT_TYPES: list[str] = [
     "Mortar Attack", "IED Blast", "Sniper Fire", "Ambush",
     "Convoy Attack", "Artillery Strike", "Border Skirmish",
@@ -381,11 +248,7 @@ def _run_pending_tick() -> None:
  
     controller = st.session_state["sim_controller"]
     new_entries = controller.run_tick()
- 
-    print(f"TICK = {st.session_state['simulation_tick']}")
-    print(f"NEW ENTRIES = {len(new_entries)}")
-    print(new_entries)
- 
+
     if new_entries:
         st.session_state["mission_log"].extend(new_entries)
  
@@ -598,16 +461,6 @@ def _render_battlefield_map() -> None:
  
  
 def _render_current_operation() -> None:
-    """
-    Region 3 (intel flank, card 2) — Current Operation.
- 
-    No metric_card: a bordered/padded card for one field (Threat Level)
-    is what made this section disproportionately tall next to its five
-    plain-text neighbors. Operation/Threat/Sector/Phase/Weather/
-    Visibility now render as one merged HTML block (a single st.markdown
-    call), so there's no per-line Streamlit element margin stacking up —
-    a compact operational-metadata stack rather than a metric dashboard.
-    """
     lines = [
         f"<b>Operation:</b> {html.escape(CURRENT_OPERATION['operation_name'])}",
         f"<b>Sector:</b> {html.escape(CURRENT_OPERATION['sector'])}",
@@ -619,21 +472,6 @@ def _render_current_operation() -> None:
  
  
 def _render_transport_queue() -> None:
-    """
-    Region 3 (intel flank, card 3) — Transport Queue. Phase 4: read-only
-    visualization of the existing runtime transport queue
-    (backend.simulation.transport_queue) — no new queue state, nothing
-    stored in session_state. Counts are read fresh from
-    transport_queue.get_queue_lengths() on every render() call, so the
-    panel automatically reflects casualties entering/leaving the queue and
-    the queue draining as resources free up, with no extra wiring needed.
- 
-    Same dense single-markdown-block style as Current Operation / Resource
-    Status / Facility Status: one row per severity (name left, count
-    right), a hairline rule above the Total Waiting line instead of
-    st.divider(), and an empty-state st.caption() instead of four zero
-    rows when nothing is waiting.
-    """
     counts = transport_queue.get_queue_lengths()
     total_waiting = sum(counts.get(severity, 0) for severity in transport_queue.QUEUE_SEVERITIES)
  

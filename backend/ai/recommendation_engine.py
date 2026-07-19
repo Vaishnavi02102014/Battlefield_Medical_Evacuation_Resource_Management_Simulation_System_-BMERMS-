@@ -519,10 +519,7 @@ def generate_recommendations(simulation_state: Optional[Dict[str, Any]]) -> Dict
     """
     resource = _safe_resource_assessment(simulation_state)
     predictions = _safe_predictions(simulation_state)
-    print("Simulation State:", simulation_state)
-    print("Resource:", resource)
-    print("Predictions:", predictions)
- 
+    
     for rule in RULES:
         result = rule(simulation_state, resource, predictions)
         if result is not None:

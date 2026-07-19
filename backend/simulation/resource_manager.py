@@ -1,28 +1,27 @@
 """
 resource_manager.py
- 
+
 Responsible for the three trackable resource pools: Ambulances, Helicopters,
 Medical Teams.
- 
-Vehicle dispatch model (v1, deliberately simple): dispatching an ambulance
-or helicopter holds it "Dispatched" for a fixed transit duration
-(utils.constants.EVACUATION_TRANSIT_MINUTES) representing a pickup-and-return
-round trip, then it is automatically released back to the available pool.
-This avoids modeling full vehicle routing while still making fleet
-availability fluctuate meaningfully on the dashboard.
- 
-Medical team model (v1): when a facility's waiting queue grows past a surge
-threshold, dispatch one available medical team to that facility. When the
-queue drops back below half the threshold, release one dispatched team from
-that facility. This is a light-touch resource-management signal, not a
-detailed staffing simulation.
- 
-Phase 6A - movement metadata (not animation): _dispatch_vehicle() now also
-records dispatch_time and origin (origin_grid_x/origin_grid_y) on the
-vehicle row at the moment of dispatch - read-only metadata for a future
-movement-visualization phase. This does not change dispatch policy, queue
-behavior, availability, or timing in any way; see _dispatch_vehicle()'s
-docstring for the full rationale.
+
+Vehicle dispatch model: dispatching an ambulance or helicopter marks it
+"Dispatched" for a transit duration determined by vehicle type and
+destination facility (utils.constants.TRANSPORT_TIME). When a vehicle's
+transit time elapses, it is either immediately re-dispatched to the
+highest-priority casualty currently waiting in the transport queue, or
+released back to the available pool if no casualty is waiting.
+
+Medical team model: when a facility's waiting queue grows past a surge
+threshold, an available medical team is dispatched to that facility. When
+the queue drops back below a lower release threshold, one dispatched team
+is released from that facility. This is a light-touch resource-management
+signal, not a detailed staffing simulation.
+
+Movement metadata: dispatching a vehicle also records dispatch_time and
+its origin position (origin_grid_x/origin_grid_y) on the vehicle row at
+the moment of dispatch. This is read-only metadata describing where and
+when the vehicle's current trip began; it does not influence dispatch
+policy, queue behavior, availability, or timing.
 """
  
 from __future__ import annotations
@@ -183,44 +182,34 @@ def _dispatch_vehicle(
     dispatch_time: datetime,
 ) -> TransportResult:
     """
-    Commit an already-selected, already-available vehicle to a casualty.
-    Responsible ONLY for: looking up destination-based travel time,
-    computing the release/arrival time, marking the vehicle Dispatched via
-    CRUD, and returning a TransportResult. No queue logic lives here - this
-    is called identically by the immediate-dispatch path and the
+    Commit an already-selected, available vehicle to a casualty.
+
+    Looks up the transit time for the given vehicle type and destination
+    facility, computes the release/arrival time, marks the vehicle
+    Dispatched via CRUD, and returns a TransportResult. Contains no queue
+    logic; it is called identically by the immediate-dispatch path and the
     re-dispatch-after-release path, so dispatch mechanics exist in exactly
     one place.
- 
-    Note: this does NOT call attach_casualty_to_resource(). For a
-    brand-new casualty, the casualty row does not exist yet at this point
-    (FK constraint - see dispatch_transport()/decision_engine.py), so
-    attachment must happen after the row is inserted. For a re-dispatched
-    (previously queued) casualty, the row already exists, so the caller
-    attaches immediately - see _redispatch_released_vehicle().
- 
-    Phase 6A - movement metadata: this is also THE single place dispatch
-    timestamp and dispatch origin are captured, per architecture
-    requirements (single dispatch commit point, no duplicate logic
-    elsewhere). Both come from data already in hand here - no new query,
-    no new coupling:
+
+    This function does not call attach_casualty_to_resource(). For a
+    newly-triaged casualty, the casualty row does not exist yet at this
+    point (see dispatch_transport() / decision_engine.py), so attachment
+    happens after the row is inserted. For a re-dispatched casualty drawn
+    from the transport queue, the row already exists, so the caller
+    attaches the resource immediately (see _redispatch_released_vehicle()).
+
+    This is also the single place dispatch timestamp and dispatch origin
+    are captured:
         - dispatch_time: the `dispatch_time` parameter this function
-          already receives (the moment this trip departs).
+        receives (the moment this trip departs).
         - origin (origin_grid_x/origin_grid_y): `vehicle.grid_x`/
-          `vehicle.grid_y` - the vehicle's own currently-stored position,
-          already present on the `vehicle` row/object passed in. This
-          deliberately does NOT read from any presentation-layer staging
-          config (e.g. map_adapter.STAGING_BASE_LAYOUT) - doing so would
-          make this backend module depend on the frontend, inverting the
-          established architecture. Instead, origin is simply "wherever
-          this vehicle was last known to be." Today nothing yet writes to
-          Ambulances/Helicopters.grid_x/grid_y, so origin will be NULL
-          until a later phase begins maintaining that field (e.g. seeding
-          it, or updating it on arrival) - a known, intentional, and
-          nullable "not yet known" state, not a bug. Once something does
-          maintain it, this function starts capturing real coordinates
-          automatically, with no changes needed here.
-    Neither value influences any dispatch decision - both are recorded
-    purely as read-only metadata for future movement visualization.
+        `vehicle.grid_y`, the vehicle's currently stored position.
+        Origin is read only from the vehicle's own row, never from any
+        presentation-layer configuration, so this module has no
+        dependency on the frontend.
+
+    Neither value influences any dispatch decision; both are recorded as
+    read-only metadata for movement visualization.
     """
     transit = TRANSPORT_TIME[vehicle_type][facility_code]
     release_time = dispatch_time + timedelta(minutes=transit)
@@ -270,39 +259,29 @@ def dispatch_transport(
 ) -> TransportResult:
     """
     Request transport for a newly-triaged casualty.
- 
-    New v2 behaviour:
-        1. Determine the eligible vehicle for this severity (_select_available_vehicle).
-        2. If one is available, dispatch immediately (_dispatch_vehicle).
-        3. If none is available, enqueue the casualty in the transport queue
-           and return a result indicating it is Awaiting Transport.
- 
-    This function never returns "Foot" - Foot evacuation no longer exists.
- 
-    Note on parameters: `casualty_id` and `facility_code` are new,
-    required parameters versus the v1 signature - both are necessary for
-    v2 (queue entries must carry a casualty_id, and travel time now
-    depends on the destination facility). `rng` is retained only for
-    call-site compatibility with the existing decision_engine.py caller;
-    it is no longer used internally, since the randomized Mild/Foot
-    fallback has been removed entirely.
- 
-    BREAKING API CHANGE vs. Version 1 - decision_engine.py must be
-    updated in Phase 1B.3 to call this function with the new signature:
-        - `casualty_id` must already exist (e.g. via crud.get_next_casualty_id())
-          BEFORE this function is called, since a queued casualty needs an
-          id to be enqueued under even though its DB row may not exist yet.
-        - `facility_code` is now required because travel time is looked up
-          as TRANSPORT_TIME[vehicle_type][facility_code] - destination now
-          determines duration, not just vehicle type - so the caller must
-          resolve the destination facility before requesting transport.
-    decision_engine.py must also be updated to consume the returned
-    TransportResult object instead of unpacking a
-    (evacuation_mode, resource_id, transit_minutes) tuple.
- 
+
+    1. Determine the eligible vehicle type for this severity
+    (_select_available_vehicle).
+    2. If a vehicle is available, dispatch it immediately (_dispatch_vehicle).
+    3. If none is available, enqueue the casualty in the transport queue and
+    return a result indicating it is Awaiting Transport.
+
+    Parameters:
+        casualty_id must already be generated (e.g. via
+        crud.get_next_casualty_id()) before this function is called, since a
+        queued casualty needs an id to be enqueued under even though its
+        database row may not exist yet.
+
+        facility_code identifies the destination facility; transit time is
+        looked up as TRANSPORT_TIME[vehicle_type][facility_code], so travel
+        duration depends on both vehicle type and destination.
+
+        rng is accepted for call-site compatibility but is not used inside
+        this function.
+
     The resource is linked to its casualty separately by the caller
-    (attach_casualty_to_resource), once the casualty row exists in the DB,
-    exactly as in v1 - this function only decides and marks the vehicle.
+    (attach_casualty_to_resource) once the casualty row exists in the
+    database; this function only selects, dispatches, and marks the vehicle.
     """
     vehicle_type, vehicle = _select_available_vehicle(severity)
  

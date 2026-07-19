@@ -1,24 +1,18 @@
-
 """
 resources.py
- 
-Resources page — final UI refinement pass before backend integration.
- 
+
+Resources page: Fleet Status, Medical Team Status, Resource Allocation,
+Dispatch Timeline, and Resource Availability.
+
+Layout:
     Row 1 — 6 KPI cards
     Row 2 — Fleet Status (3) | Medical Team Status (2)
     Row 3 — Resource Allocation (2) | Dispatch Timeline (2) | Resource Availability (1)
- 
-Data access is fully separated from rendering: every panel reads only
-from the helper functions below. Each returns hardcoded mock data today,
-but is named and shaped so a later phase can swap the body for a real
-crud.get_...()/resource_manager.get_...() call with zero UI changes.
-No backend imports yet — this remains mock data only.
- 
-Panel heights are reserved via a nested st.container(height=...) inside
-each `with panel(...):` block (panel.py itself is not modified). Fleet
-Status and Medical Team Status use compact tactical rows/progress bars
-instead of metric cards, per the command-console design direction —
-metric_card is still used only for the top KPI strip.
+
+Data source: services.resources_service exclusively. Dispatch Timeline
+has no backing data in the current schema (there is no persisted
+dispatch-event history) and renders its documented empty state rather
+than fabricated numbers; every other panel is live.
 """
  
 import streamlit as st
@@ -30,7 +24,6 @@ from services.resources_service import (
     get_fleet_status,
     get_medical_team_status,
     get_resource_summary,
-    get_dispatch_history,
     get_resource_availability,
 )
  

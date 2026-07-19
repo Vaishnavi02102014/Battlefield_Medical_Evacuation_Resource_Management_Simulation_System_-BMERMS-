@@ -13,20 +13,15 @@ changed.
 # ==========================================================================
 # FRONTEND_MAP_LAYOUT — visualization-only coordinate data.
 #
-# This entire block exists ONLY because the frontend is currently running
-# on mock simulation state that carries no coordinates of its own
-# (FACILITY_STATUS/RESOURCE_STATUS/MISSION_LOG_ENTRIES are plain
-# name/stat/text data — none of it has a grid position). The numbers
-# below mirror backend/Phase 1/constants.py's real AO_GRID_BOUNDS /
-# FACILITY_CONFIG / SECTOR_GRID_ANCHORS values, so today's map looks
-# geographically consistent with the eventual real system, but this is
-# NOT a live import and NOT a second authoritative copy of backend data —
-# it is temporary frontend plumbing, clearly named as such.
+# facility_positions is an independently maintained coordinate set, tuned
+# for the rendered map canvas. It is not read from the backend's
+# Facility.grid_x/grid_y columns, and the two coordinate sets do not
+# currently agree numerically - this is presentation-layer data, not a
+# second copy of database state.
 #
-# When backend integration happens, get_map_data() below should be
-# rewritten to read grid_x/grid_y directly from the backend's own
-# Facility/Incident/Ambulance/Helicopter rows, and this entire dict
-# should be deleted rather than kept "just in case."
+# resource_staging_points and facility_code_to_name are keyed the same
+# way (by facility_code) for the same reason: map layout is owned here,
+# independent of backend storage.
 # ==========================================================================
 FRONTEND_MAP_LAYOUT: dict = {
     "bounds": {"min_x": 0.0, "max_x": 100.0, "min_y": 0.0, "max_y": 100.0},

@@ -1,32 +1,45 @@
 """
 analytics.py
- 
-Analytics page — Phase 2. Command-intelligence / decision-support surface:
-trends, forecasts, resource utilization, and AI-assisted panels.
- 
-Deliberately does NOT duplicate:
-    Dashboard  -> operational snapshot
-    Facilities -> per-facility console
-    Resources  -> fleet inventory management
-    Patients   -> casualty registry / history
- 
-BACKEND STATUS
-    Live data (KPIs, current facility/resource state) has real crud.py
-    sources — see the TODO Integration comment on each helper below.
-    Trend/history data has no persistence yet, so every helper here
-    returns placeholder data shaped like its eventual real source, so a
-    later phase can swap function bodies only, with zero caller/UI changes.
- 
-    AI panels (AI-Assisted Decision Support, AI Model Performance) have no
-    backend today. Integration points are reserved for:
-        backend/ai/predictor.py
-        backend/ai/model.pkl
-        backend/ai/metrics.json
-    No model loading, training, or predictor code is implemented here.
- 
-This file only. No backend, database, or other page changes.
+
+Analytics page for the Battlefield Medical Evacuation Resource
+Management Simulation System (BMERMS).
+
+The page presents operational analytics derived from the current
+simulation state, combining backend data with lightweight frontend
+aggregations and visualizations.
+
+Displayed analytics include:
+
+• KPI Summary
+• Casualty Trend Analysis
+• Facility Load Analysis
+• Resource Utilization
+• Sector Hotspots
+• Triage Severity Distribution
+• AI Model Performance
+
+Data is obtained through the frontend service layer
+(dashboard_service, facilities_service, resources_service and
+patients_service), with a small number of direct backend queries where
+an existing service abstraction does not already exist.
+
+Time-series charts maintain rolling, session-scoped history using
+st.session_state so trends remain visible while the application is
+running. This history is intentionally non-persistent and is cleared
+whenever the application session ends.
+
+The module is organised into four logical layers:
+
+1. Data collection and aggregation.
+2. Plotly figure construction.
+3. Streamlit rendering helpers.
+4. Page composition.
+
+The Analytics page performs no database writes and does not modify the
+simulation state. It is a read-only operational reporting interface
+built on the current state of the simulation.
 """
- 
+
 from __future__ import annotations
  
 from datetime import datetime, timedelta
@@ -69,12 +82,7 @@ TREND_ACCENT = {
     "Incidents": "danger", "Casualties": "info", "Recoveries": "primary", "Returned To Duty": "warning",
 }
  
- 
-# --------------------------------------------------------------------------
-# DATA LAYER
-# Placeholder data only. Each function is shaped to match its eventual real
-# source so Phase 3 wiring replaces function bodies, not callers.
-# --------------------------------------------------------------------------
+
  
 def _get_kpi_metrics() -> list[dict]:
     """

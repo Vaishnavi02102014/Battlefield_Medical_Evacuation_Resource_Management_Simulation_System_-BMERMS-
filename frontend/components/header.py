@@ -3,9 +3,7 @@ header.py
  
 Reusable top header bar. Shown once per page, directly under the sidebar's
 content area. Pure display component — it takes already-computed values as
-arguments, so it has no dependency on the simulation/database backend. Once
-Phase 3 pages exist, they'll pass live simulation values in here; for now
-callers can pass whatever they have (including nothing, for a placeholder).
+arguments, so it has no dependency on the simulation/database backend.
 """
  
 from __future__ import annotations

@@ -1,15 +1,13 @@
 """
 facilities.py
- 
-Facilities page — refined Phase 1: KPI summary, Operational Facility
-Overview table (search/filter/sort, fixed height, empty state, facility
-count in the panel toolbar), and a command-console-style Facility Detail
-panel grouped into Status / Capacity / Operations.
- 
-All data comes from data/facilities_mock_data.py (the single centralized
-mock provider, unchanged) — nothing is hardcoded here. Search/filter/sort
-are real, functional, client-side operations over that in-memory mock
-data (no backend calls).
+
+Facilities page: KPI summary, the Operational Facility Overview table
+(search/filter/sort), and a Facility Detail panel (Status / Capacity /
+Operations).
+
+Data source: services.facilities_service exclusively. This page holds
+no direct backend imports and no SQL; search/filter/sort are real,
+functional client-side operations over live facility data.
 """
  
 from __future__ import annotations
