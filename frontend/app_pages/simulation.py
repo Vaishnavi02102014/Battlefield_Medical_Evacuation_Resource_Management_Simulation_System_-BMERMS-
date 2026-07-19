@@ -36,7 +36,8 @@ an accident of where panels happened to fit:
                                     as a status bar over the map, not a
                                     row of its own mini-cards.
     Region 3  Intel flank          AI Tactical Recommendation, then
-                                    Current Operation — beside the map,
+                                    Current Operation, then Transport
+                                    Queue (Phase 4) — beside the map,
                                     each now a single merged HTML block
                                     per panel instead of several separate
                                     st.caption()/st.markdown() calls, so
@@ -138,6 +139,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from backend.database import crud
 from backend.simulation.simulation_controller import SimulationController
+from backend.simulation import transport_queue
 from services import resources_service
 from services import facilities_service
 from services import ai_service
@@ -174,7 +176,7 @@ CURRENT_TICK: str = "12,842"
  
 # Current Operation: live from crud (Phase 6B.3).
 # Rebuilt on every render() call.
-
+ 
 def _build_current_operation() -> dict:
     operation = crud.get_active_operation()
     operation_name = (
@@ -182,28 +184,28 @@ def _build_current_operation() -> dict:
         if operation
         else "No Active Operation"
     )
-
+ 
     recent_incidents = crud.get_recent_incidents()
     sector = (
         recent_incidents[0].battle_sector
         if recent_incidents
         else "No Active Incidents"
     )
-
+ 
     return {
         "operation_name": operation_name,
         "sector": sector,
     }
-
-
+ 
+ 
 CURRENT_OPERATION: dict = {}
-
+ 
 # Resource fleets: (name, icon, available, busy, returning, maintenance).
 # Totals match the backend's fixed fleet sizes exactly.
 def _build_resource_status() -> list[dict]:
     fleet = resources_service.get_fleet_status()
     teams = resources_service.get_medical_team_status()
-
+ 
     return [
         {
             "name": "Ambulances",
@@ -224,13 +226,13 @@ def _build_resource_status() -> list[dict]:
             "dispatched": teams["deployed_teams"],
         },
     ]
-
-
+ 
+ 
 RESOURCE_STATUS: list[dict] = _build_resource_status()
  
 # Facility cards: live from facilities_service (Phase 6B.1).
 # Rebuilt on every render() call, same pattern as RESOURCE_STATUS.
-
+ 
 def _build_facility_status() -> list[dict]:
     return [
         {
@@ -245,14 +247,14 @@ def _build_facility_status() -> list[dict]:
         }
         for facility in facilities_service.get_facility_overview()
     ]
-
-
+ 
+ 
 FACILITY_STATUS: list[dict] = []
  
 def _build_ai_recommendation() -> dict:
     return ai_service.get_ai_recommendation()
-
-
+ 
+ 
 AI_RECOMMENDATION: dict = {}
  
 # Live Mission Log entries — newest first. Categories match the set
@@ -367,82 +369,83 @@ def _inline_status_html(text: str, color: str) -> str:
     accent = resolve_color(color)
     safe_text = html.escape(text)
     return f'<span style="color:{accent};font-weight:600;white-space:nowrap;">{safe_text}</span>'
-
+ 
 def _get_current_tick() -> int:
     return st.session_state.get("simulation_tick", 0)
  
 def _run_pending_tick() -> None:
     clock = st.session_state["sim_clock"]
-
+ 
     if not clock.is_running:
         return
-
+ 
     controller = st.session_state["sim_controller"]
     new_entries = controller.run_tick()
-
+ 
     print(f"TICK = {st.session_state['simulation_tick']}")
     print(f"NEW ENTRIES = {len(new_entries)}")
     print(new_entries)
-
+ 
     if new_entries:
         st.session_state["mission_log"].extend(new_entries)
-
+ 
     st.session_state["simulation_tick"] += 1
-
+ 
 def _render_status_button_row() -> None:
     """Start / Pause / Resume / Reset as one 4-across row — the command strip is wide enough now that this no longer wraps."""
     clock = st.session_state["sim_clock"]
     status = st.session_state["simulation_status"]
-
+ 
     labels_and_keys = [
         ("▶ Start", "simulation_ctrl_start", "Running"),
         ("⏸ Pause", "simulation_ctrl_pause", "Paused"),
         ("↻ Resume", "simulation_ctrl_resume", "Running"),
         ("⟳ Reset", "simulation_ctrl_reset", "Stopped"),
     ]
-
+ 
     columns = st.columns(4, gap="small")
-
+ 
     for column, (label, key, target_status) in zip(columns, labels_and_keys):
         with column:
             button = primary_button if status == target_status else secondary_button
-
+ 
             if button(label, key=key):
-
+ 
                 if label == "⟳ Reset":
                     crud.reset_simulation_data()
+                    transport_queue.reset_queue()
                     clock.reset()
-
+ 
                     st.session_state["sim_controller"] = (
                         SimulationController(clock)
                     )
-
+ 
                     st.session_state["simulation_status"] = "Stopped"
                     st.session_state["simulation_speed"] = 1
                     clock.set_speed(1)
-
+ 
                     st.session_state["simulation_tick"] = 0
                     st.session_state["manual_incident_counter"] = 0
                     st.session_state["last_manual_incident"] = None
-
+ 
                     st.session_state["mission_log"].clear()
-
+ 
                     if "tactical_map_reset_counter" in st.session_state:
                         st.session_state["tactical_map_reset_counter"] += 1
                     # Clear Analytics casualty trend history so the
                     # trend chart starts empty after Reset Simulation.
                     if "analytics_casualty_history" in st.session_state:
                         st.session_state["analytics_casualty_history"].clear()
-
+ 
                 else:
                     st.session_state["simulation_status"] = target_status
-
+ 
                     if target_status == "Running":
                         clock.start()
-
+ 
                     elif target_status == "Paused":
                         clock.pause()
-
+ 
                 st.rerun()
  
  
@@ -512,20 +515,20 @@ def _render_incident_type_buttons() -> None:
 def _handle_generate_incident_click() -> None:
     incident_type = st.session_state["manual_incident_type"]
     casualty_count = st.session_state["manual_casualty_count"]
-
+ 
     controller = st.session_state["sim_controller"]
-
+ 
     new_entries = controller.trigger_manual_incident(
         event_type=incident_type,
         casualty_count=casualty_count,
     )
-
+ 
     if new_entries:
         st.session_state["mission_log"].extend(new_entries)
-
+ 
     global RESOURCE_STATUS
     RESOURCE_STATUS = _build_resource_status()
-
+ 
     st.session_state["manual_incident_counter"] += 1
     st.session_state["last_manual_incident"] = {
         "type": incident_type,
@@ -578,6 +581,8 @@ def _render_battlefield_map() -> None:
     single resulting MapData object to the renderer — it never assembles
     map-specific data itself.
     """ 
+    clock = st.session_state["sim_clock"]
+
     map_data = get_map_data(
         FACILITY_STATUS,
         RESOURCE_STATUS,
@@ -586,8 +591,9 @@ def _render_battlefield_map() -> None:
         crud.get_all_ambulances(),
         crud.get_all_helicopters(),
         crud.get_all_medical_teams(),
+        current_time=clock.current_time,
     )
-
+ 
     render_tactical_map(map_data)
  
  
@@ -608,6 +614,48 @@ def _render_current_operation() -> None:
     ]
     st.markdown(
         f'<div style="line-height:1.55;">{"<br/>".join(lines)}</div>',
+        unsafe_allow_html=True,
+    )
+ 
+ 
+def _render_transport_queue() -> None:
+    """
+    Region 3 (intel flank, card 3) — Transport Queue. Phase 4: read-only
+    visualization of the existing runtime transport queue
+    (backend.simulation.transport_queue) — no new queue state, nothing
+    stored in session_state. Counts are read fresh from
+    transport_queue.get_queue_lengths() on every render() call, so the
+    panel automatically reflects casualties entering/leaving the queue and
+    the queue draining as resources free up, with no extra wiring needed.
+ 
+    Same dense single-markdown-block style as Current Operation / Resource
+    Status / Facility Status: one row per severity (name left, count
+    right), a hairline rule above the Total Waiting line instead of
+    st.divider(), and an empty-state st.caption() instead of four zero
+    rows when nothing is waiting.
+    """
+    counts = transport_queue.get_queue_lengths()
+    total_waiting = sum(counts.get(severity, 0) for severity in transport_queue.QUEUE_SEVERITIES)
+ 
+    if total_waiting == 0:
+        st.caption("✓ No casualties awaiting transport.")
+        return
+ 
+    rows_html = "".join(
+        f'<div style="display:flex;justify-content:space-between;">'
+        f'<span>{html.escape(severity)}</span>'
+        f'<span style="font-weight:600;">{counts.get(severity, 0)}</span>'
+        '</div>'
+        for severity in transport_queue.QUEUE_SEVERITIES
+    )
+    total_html = (
+        f'<div style="border-top:1px solid {COLOR_BORDER};margin-top:6px;padding-top:6px;'
+        'display:flex;justify-content:space-between;font-weight:600;">'
+        f'<span>Total Waiting</span><span>{total_waiting}</span>'
+        '</div>'
+    )
+    st.markdown(
+        f'<div style="line-height:1.55;">{rows_html}{total_html}</div>',
         unsafe_allow_html=True,
     )
  
@@ -747,54 +795,54 @@ def _render_facility_status() -> None:
 # translated into plain language and every raw fragment is stripped
 # below, without touching any backend text.
 # --------------------------------------------------------------------------
-
+ 
 _STANDARD_MONITORING_TEXT = "Continue standard operations and monitoring."
-
+ 
 PRIORITY_BADGE_COLORS = {
     "CRITICAL": COLOR_DANGER,
     "HIGH": "#F2984B",  # orange — no dedicated theme.py token; reserved for this badge only
     "MEDIUM": COLOR_WARNING,
     "NORMAL": COLOR_PRIMARY,
 }
-
+ 
 _PRIMARY_DRIVER_LABELS = {
     "occupancy": "Facility occupancy is the primary constraint.",
     "queue": "Casualty queue length is the primary constraint.",
     "critical": "Critical casualty volume is the primary constraint.",
     "resources": "Available resource shortage is the primary constraint.",
 }
-
+ 
 _DEBUG_MARKER_PATTERN = re.compile(
     r"occupancy=|queue=|critical=|resources=|weighted load score|primary driver|transfer_required=",
     re.IGNORECASE,
 )
-
-
+ 
+ 
 def _ai_priority_level(recommendation: dict) -> str:
     """
     Display-only priority badge.
-
+ 
     Until the backend provides an explicit priority field,
     infer it from the recommendation text instead of AI confidence.
     """
-
+ 
     text = recommendation.get("recommendation", "").lower()
-
+ 
     if "contingency evacuation" in text:
         return "CRITICAL"
-
+ 
     elif "deploy" in text:
         return "HIGH"
-
+ 
     elif "reroute" in text:
         return "HIGH"
-
+ 
     elif "prepare" in text:
         return "MEDIUM"
-
+ 
     return "NORMAL"
-
-
+ 
+ 
 def _priority_badge_html(level: str) -> str:
     color = PRIORITY_BADGE_COLORS.get(level, COLOR_PRIMARY)
     return (
@@ -802,8 +850,8 @@ def _priority_badge_html(level: str) -> str:
         f'font-size:0.70rem;font-weight:700;letter-spacing:0.06em;'
         f'color:{COLOR_BACKGROUND};background:{color};">{html.escape(level)}</span>'
     )
-
-
+ 
+ 
 def _build_reason_bullets(reason: str) -> list[str]:
     """Translates a recommendation_engine.py `reason` string into 1+
     clean, human-readable bullets, extracting the meaning of any raw
@@ -811,7 +859,7 @@ def _build_reason_bullets(reason: str) -> list[str]:
     remaining raw fragment (see module note above)."""
     text = reason or ""
     bullets: list[str] = []
-
+ 
     driver_match = re.search(r"primary driver:\s*(\w+)", text, re.IGNORECASE)
     if driver_match:
         bullets.append(
@@ -819,12 +867,12 @@ def _build_reason_bullets(reason: str) -> list[str]:
                 driver_match.group(1).lower(), "Resource load is currently elevated."
             )
         )
-
+ 
     transfer_match = re.search(r"transfer_required=(\w+)", text, re.IGNORECASE)
     if transfer_match:
         verdict = "required" if transfer_match.group(1).lower() == "yes" else "not required"
         bullets.append(f"Transfer is predicted to be {verdict}.")
-
+ 
     # Peel off parenthetical groups that embed raw metrics, innermost
     # first, re-running until none remain (handles the one level of
     # nesting a caller can wrap resource_assessment.py's reason in).
@@ -838,32 +886,32 @@ def _build_reason_bullets(reason: str) -> list[str]:
         if next_scrubbed == scrubbed:
             break
         scrubbed = next_scrubbed
-
+ 
     scrubbed = re.sub(r"\s*;\s*", " ", scrubbed)
     scrubbed = re.sub(r"\s{2,}", " ", scrubbed)
     scrubbed = re.sub(r"\s+\.", ".", scrubbed)
     scrubbed = scrubbed.strip()
-
+ 
     for sentence in re.split(r"(?<=[.])\s+", scrubbed):
         sentence = sentence.strip(" .")
         if not sentence or _DEBUG_MARKER_PATTERN.search(sentence):
             continue
         bullets.append(sentence + ".")
-
+ 
     if not bullets:
         bullets.append("Resource load is currently elevated.")
-
+ 
     return bullets
-
-
+ 
+ 
 def _build_benefit_bullets(benefit: str) -> list[str]:
     """expected_benefit strings from recommendation_engine.py are always
     already clean prose — this just splits them into bullet sentences."""
     text = (benefit or "").strip()
     bullets = [s.strip(" .") + "." for s in re.split(r"(?<=[.])\s+", text) if s.strip(" .")]
     return bullets or ["No additional benefit information available."]
-
-
+ 
+ 
 def _render_ai_recommendation() -> None:
     """
     Region 3 (intel flank, card 1, directly beside the map) — AI
@@ -877,13 +925,13 @@ def _render_ai_recommendation() -> None:
     level = _ai_priority_level(AI_RECOMMENDATION)
     reason_bullets = _build_reason_bullets(AI_RECOMMENDATION.get("reason", ""))
     benefit_bullets = _build_benefit_bullets(AI_RECOMMENDATION.get("expected_benefit", ""))
-
+ 
     reason_html = "".join(f"<div>• {html.escape(b)}</div>" for b in reason_bullets)
     benefit_html = "".join(f"<div>• {html.escape(b)}</div>" for b in benefit_bullets)
     divider = f'<div style="border-top:1px solid {COLOR_BORDER};margin:8px 0;"></div>'
     label_style = f"font-size:0.70rem;letter-spacing:0.05em;color:{COLOR_TEXT_SECONDARY};"
     body_style = f"font-size:0.82rem;line-height:1.5;color:{COLOR_TEXT_SECONDARY};margin:2px 0;"
-
+ 
     st.markdown(
         f'{_priority_badge_html(level)}'
         f'{divider}'
@@ -899,7 +947,7 @@ def _render_ai_recommendation() -> None:
         f'<div style="{label_style}">AI CONFIDENCE</div>',
         unsafe_allow_html=True,
     )
-
+ 
     confidence = AI_RECOMMENDATION.get("confidence") or 0.0
     st.progress(min(max(confidence / 100, 0.0), 1.0))
     st.caption(f"{confidence:.0f}%")
@@ -909,19 +957,19 @@ def _get_filtered_mission_log_entries() -> list[dict]:
     """
     Shared filter logic for both the panel's toolbar count and its rendered feed.
     """
-
+ 
     selected_filter = st.session_state.get(
         "simulation_mission_log_filter",
         "All",
     )
-
+ 
     mission_log = st.session_state.get(
         "mission_log",
         []
     )
-
+ 
     entries = []
-
+ 
     for entry in reversed(mission_log):
         entries.append(
             {
@@ -930,7 +978,7 @@ def _get_filtered_mission_log_entries() -> list[dict]:
                 "description": entry.message,
             }
         )
-
+ 
     return [
         entry
         for entry in entries
@@ -985,7 +1033,7 @@ def _render_live_mission_log() -> None:
  
  
 ALERT_SEVERITY_COLOR: dict[str, str] = {"Critical": "danger", "Warning": "warning", "Information": "info"}
-
+ 
 def _generate_alerts() -> list[dict]:
     """
     Generate operational alerts directly from facility and resource data.
@@ -993,7 +1041,7 @@ def _generate_alerts() -> list[dict]:
     logic can later be wired to backend responses without redesign.
     """
     alerts = []
-
+ 
     # ------------------------------
     # Facility occupancy alerts
     # ------------------------------
@@ -1001,7 +1049,7 @@ def _generate_alerts() -> list[dict]:
         occupancy_pct = round(
             facility["occupied"] / facility["capacity"] * 100
         )
-
+ 
         if occupancy_pct >= 90:
             alerts.append({
                 "severity": "Critical",
@@ -1009,7 +1057,7 @@ def _generate_alerts() -> list[dict]:
                     f"{facility['name']} occupancy has reached "
                     f"{occupancy_pct}%.",
             })
-
+ 
         if facility["waiting"] >= 20:
             alerts.append({
                 "severity": "Warning",
@@ -1017,7 +1065,7 @@ def _generate_alerts() -> list[dict]:
                     f"{facility['name']} waiting queue has reached "
                     f"{facility['waiting']} personnel.",
             })
-
+ 
     # ------------------------------
     # Resource availability alerts
     # ------------------------------
@@ -1026,19 +1074,19 @@ def _generate_alerts() -> list[dict]:
             resource["available"]
             + resource["dispatched"]
         )
-
+ 
         if total == 0:
             continue
-
+ 
         availability_pct = resource["available"] / total
-
+ 
         if resource["available"] == 0:
             alerts.append({
                 "severity": "Critical",
                 "message":
                     f"No {resource['name'].lower()} are currently available.",
             })
-
+ 
         elif availability_pct <= 0.20:
             alerts.append({
                 "severity": "Warning",
@@ -1046,7 +1094,7 @@ def _generate_alerts() -> list[dict]:
                     f"Only {resource['available']} of {total} "
                     f"{resource['name'].lower()} are currently available.",
             })
-
+ 
     return alerts
  
  
@@ -1063,7 +1111,7 @@ def _render_bottom_alert_bar() -> None:
     narrower widths.
     """
     alerts = _generate_alerts()
-
+ 
     if not alerts:
         st.caption("No active alerts.")
         return
@@ -1114,7 +1162,7 @@ def render() -> None:
     Region 2 — the hero: Battlefield Map, ~70% of the workspace width
     (HERO_ROW_RATIO), ready for a drop-in Folium replacement.
     Region 3 — intel flank beside the map: AI Tactical Recommendation,
-    then Current Operation.
+    then Current Operation, then Transport Queue.
     Region 4 — readiness band, full width: Resource Status | Facility
     Status, side by side.
     Region 5 — mission feed: Live Mission Log, deliberately narrower
@@ -1123,17 +1171,17 @@ def render() -> None:
     Region 6 — alert ribbon: the Bottom Alert Bar, full width, last.
     """
     global RESOURCE_STATUS, FACILITY_STATUS, CURRENT_OPERATION, AI_RECOMMENDATION
-
+ 
     _init_session_state()
     _run_pending_tick()
-
+ 
     RESOURCE_STATUS = _build_resource_status()
     FACILITY_STATUS = _build_facility_status()
     CURRENT_OPERATION = _build_current_operation()
     AI_RECOMMENDATION = _build_ai_recommendation()
-
+ 
     clock = st.session_state["sim_clock"]
-
+ 
     if clock.is_running:
         st_autorefresh(
             interval=TICK_INTERVAL_MS,
@@ -1157,6 +1205,8 @@ def render() -> None:
             _render_ai_recommendation()
         with panel("Current Operation"):
             _render_current_operation()
+        with panel("Transport Queue"):
+            _render_transport_queue()
  
     resource_col, facility_col = st.columns(SUPPORT_ROW_RATIO)
     with resource_col:
@@ -1181,3 +1231,30 @@ def render() -> None:
     with alert_col:
         with panel("Bottom Alert Bar"):
             _render_bottom_alert_bar()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

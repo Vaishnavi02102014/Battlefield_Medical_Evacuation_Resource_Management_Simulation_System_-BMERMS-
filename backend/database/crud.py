@@ -331,6 +331,44 @@ def update_casualty_status(casualty_id: str, status: str, return_to_duty: Option
             )
  
  
+def update_casualty_evacuation(
+    casualty_id: str,
+    status: str,
+    evacuation_mode: Optional[str] = None,
+    evacuation_arrival_time: Optional[str] = None,
+) -> None:
+    """
+    Atomically transition a casualty into (or within) evacuation: status,
+    evacuation_mode, and evacuation_arrival_time written together in one
+    statement.
+ 
+    This is the single write path for any "vehicle just took this
+    casualty" event, regardless of whether the vehicle was dispatched
+    immediately at triage (decision_engine.py, via
+    resource_manager.dispatch_transport) or obtained later from the
+    transport queue (resource_manager._redispatch_released_vehicle).
+    Both call sites must leave the casualty row in an identical shape —
+    status="Being Evacuated" with a real evacuation_arrival_time — or
+    process_arrived_evacuations()'s "WHERE evacuation_arrival_time <= ?"
+    gate silently never matches (NULL comparisons are always false in
+    SQL), leaving the casualty permanently stuck in "Being Evacuated".
+ 
+    update_casualty_status() remains the correct call for status-only
+    transitions that have nothing to do with evacuation timing (e.g.
+    Recovered, Returned To Duty); this function is specifically for the
+    evacuation hand-off moment.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE Casualties
+            SET status = ?, evacuation_mode = ?, evacuation_arrival_time = ?
+            WHERE casualty_id = ?
+            """,
+            (status, evacuation_mode, evacuation_arrival_time, casualty_id),
+        )
+ 
+ 
 def get_casualty(casualty_id: str) -> Optional[Casualty]:
     with get_connection() as conn:
         row = conn.execute(
@@ -437,7 +475,7 @@ def get_due_treatments(current_sim_time: str) -> list[Treatment]:
             (current_sim_time,),
         ).fetchall()
     return [Treatment.from_row(r) for r in rows]
-
+ 
 def get_due_return_to_duty(current_time: str) -> list[Casualty]:
     """
     Recovered casualties whose scheduled return_to_duty time has elapsed.
@@ -453,7 +491,7 @@ def get_due_return_to_duty(current_time: str) -> list[Casualty]:
             """,
             (current_time,),
         ).fetchall()
-
+ 
     return [Casualty.from_row(r) for r in rows]
  
  
@@ -508,7 +546,7 @@ def get_all_queues() -> list[QueueEntry]:
     with get_connection() as conn:
         rows = conn.execute("SELECT * FROM Waiting_Queue ORDER BY arrival_time").fetchall()
     return [QueueEntry.from_row(r) for r in rows]
-
+ 
 def update_queue_waiting_time(queue_id: int, waiting_time: int) -> None:
     with get_connection() as conn:
         conn.execute(
@@ -549,19 +587,67 @@ def get_available_medical_team() -> Optional[MedicalTeam]:
     return MedicalTeam.from_row(row) if row else None
  
  
-def dispatch_ambulance(ambulance_id: int, release_time: str) -> None:
+def dispatch_ambulance(
+    ambulance_id: int,
+    release_time: str,
+    dispatch_time: Optional[str] = None,
+    origin_grid_x: Optional[float] = None,
+    origin_grid_y: Optional[float] = None,
+) -> None:
+    """
+    Mark an ambulance Dispatched with its release (ETA) time.
+ 
+    dispatch_time/origin_grid_x/origin_grid_y are optional movement
+    metadata (Phase 6A) recording WHEN this specific trip departed and
+    WHERE from. They default to None (written as NULL) so any existing
+    caller that only passes release_time keeps working unchanged - this
+    is purely additive. Not used by any transport/dispatch decision;
+    read-only metadata for future movement visualization.
+    """
     with get_connection() as conn:
         conn.execute(
-            "UPDATE Ambulances SET status = 'Dispatched', release_time = ? WHERE ambulance_id = ?",
-            (release_time, ambulance_id),
+            """
+            UPDATE Ambulances
+            SET status = 'Dispatched',
+                release_time = ?,
+                dispatch_time = ?,
+                origin_grid_x = ?,
+                origin_grid_y = ?
+            WHERE ambulance_id = ?
+            """,
+            (release_time, dispatch_time, origin_grid_x, origin_grid_y, ambulance_id),
         )
  
  
-def dispatch_helicopter(helicopter_id: int, release_time: str) -> None:
+def dispatch_helicopter(
+    helicopter_id: int,
+    release_time: str,
+    dispatch_time: Optional[str] = None,
+    origin_grid_x: Optional[float] = None,
+    origin_grid_y: Optional[float] = None,
+) -> None:
+    """
+    Mark a helicopter Dispatched with its release (ETA) time.
+ 
+    dispatch_time/origin_grid_x/origin_grid_y are optional movement
+    metadata (Phase 6A) recording WHEN this specific trip departed and
+    WHERE from. They default to None (written as NULL) so any existing
+    caller that only passes release_time keeps working unchanged - this
+    is purely additive. Not used by any transport/dispatch decision;
+    read-only metadata for future movement visualization.
+    """
     with get_connection() as conn:
         conn.execute(
-            "UPDATE Helicopters SET status = 'Dispatched', release_time = ? WHERE helicopter_id = ?",
-            (release_time, helicopter_id),
+            """
+            UPDATE Helicopters
+            SET status = 'Dispatched',
+                release_time = ?,
+                dispatch_time = ?,
+                origin_grid_x = ?,
+                origin_grid_y = ?
+            WHERE helicopter_id = ?
+            """,
+            (release_time, dispatch_time, origin_grid_x, origin_grid_y, helicopter_id),
         )
  
  
@@ -592,7 +678,16 @@ def dispatch_medical_team(team_id: int, facility_id: int) -> None:
 def release_ambulance(ambulance_id: int) -> None:
     with get_connection() as conn:
         conn.execute(
-            "UPDATE Ambulances SET status = 'Available', assigned_casualty = NULL, release_time = NULL WHERE ambulance_id = ?",
+            """
+            UPDATE Ambulances
+            SET status = 'Available',
+                assigned_casualty = NULL,
+                release_time = NULL,
+                dispatch_time = NULL,
+                origin_grid_x = NULL,
+                origin_grid_y = NULL
+            WHERE ambulance_id = ?
+            """,
             (ambulance_id,),
         )
  
@@ -600,7 +695,16 @@ def release_ambulance(ambulance_id: int) -> None:
 def release_helicopter(helicopter_id: int) -> None:
     with get_connection() as conn:
         conn.execute(
-            "UPDATE Helicopters SET status = 'Available', assigned_casualty = NULL, release_time = NULL WHERE helicopter_id = ?",
+            """
+            UPDATE Helicopters
+            SET status = 'Available',
+                assigned_casualty = NULL,
+                release_time = NULL,
+                dispatch_time = NULL,
+                origin_grid_x = NULL,
+                origin_grid_y = NULL
+            WHERE helicopter_id = ?
+            """,
             (helicopter_id,),
         )
  
@@ -656,21 +760,21 @@ def get_resource_availability_counts() -> dict:
         "helicopters": {"available": heli_avail, "total": heli_total},
         "medical_teams": {"available": team_avail, "total": team_total},
     }
-
+ 
 def get_all_ambulances() -> list[Ambulance]:
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM Ambulances ORDER BY ambulance_id"
         ).fetchall()
     return [Ambulance.from_row(r) for r in rows]
-
+ 
 def get_all_helicopters() -> list[Helicopter]:
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM Helicopters ORDER BY helicopter_id"
         ).fetchall()
     return [Helicopter.from_row(r) for r in rows]
-
+ 
 def get_all_medical_teams() -> list[MedicalTeam]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -724,7 +828,7 @@ def get_severity_distribution() -> dict[str, int]:
             "SELECT severity, COUNT(*) AS c FROM Casualties GROUP BY severity"
         ).fetchall()
     return {r["severity"]: r["c"] for r in rows}
-
+ 
 def count_dispatched_teams_for_facility(facility_id: int) -> int:
     """
     Number of medical teams currently dispatched to a facility.
@@ -740,14 +844,14 @@ def count_dispatched_teams_for_facility(facility_id: int) -> int:
             """,
             (facility_id,),
         ).fetchone()
-
+ 
     return row[0] if row else 0
-
+ 
 def get_treatments_for_casualty(casualty_id: str) -> list[Treatment]:
     """
     All Treatment rows for one casualty, most recent (by treatment_start)
     first.
-
+ 
     Added to support per-patient treatment history lookups (e.g. the
     Patients page's "Current Treatment" panel) — no existing function
     provided this: insert_treatment()/complete_treatment() only write,
@@ -760,21 +864,21 @@ def get_treatments_for_casualty(casualty_id: str) -> list[Treatment]:
             (casualty_id,),
         ).fetchall()
     return [Treatment.from_row(r) for r in rows]
-
+ 
 # ==========================================================================
 # SIMULATION RESET
 # ==========================================================================
-
+ 
 def reset_simulation_data() -> None:
     """
     Reset all runtime simulation data so every app start begins from a
     completely fresh battlefield state.
-
+ 
     Infrastructure tables (Facilities, Beds, Resources) are preserved and
     merely reset to their default states.
     """
     with get_connection() as conn:
-
+ 
         # ----------------------------------------------------------
         # IMPORTANT:
         # Clear foreign-key references FIRST.
@@ -789,7 +893,7 @@ def reset_simulation_data() -> None:
                 release_time = NULL
             """
         )
-
+ 
         conn.execute(
             """
             UPDATE Helicopters
@@ -799,7 +903,7 @@ def reset_simulation_data() -> None:
                 release_time = NULL
             """
         )
-
+ 
         # ----------------------------------------------------------
         # Now it is safe to delete runtime data.
         # ----------------------------------------------------------
@@ -807,7 +911,7 @@ def reset_simulation_data() -> None:
         conn.execute("DELETE FROM Waiting_Queue")
         conn.execute("DELETE FROM Casualties")
         conn.execute("DELETE FROM Incidents")
-
+ 
         # Reset beds
         conn.execute(
             """
@@ -819,7 +923,7 @@ def reset_simulation_data() -> None:
                 expected_release_time = NULL
             """
         )
-
+ 
         # Reset facilities
         conn.execute(
             """
@@ -831,7 +935,7 @@ def reset_simulation_data() -> None:
                 facility_status = 'Operational'
             """
         )
-
+ 
         # Reset medical teams
         conn.execute(
             """
@@ -841,5 +945,5 @@ def reset_simulation_data() -> None:
                 assigned_facility = NULL
             """
         )
-
+ 
         conn.commit()

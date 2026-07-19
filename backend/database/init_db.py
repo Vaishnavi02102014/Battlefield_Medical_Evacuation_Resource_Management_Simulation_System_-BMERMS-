@@ -1,3 +1,4 @@
+
 """
 init_db.py
  
@@ -7,6 +8,20 @@ Creates the database schema (10 tables) and seeds static/reference data:
  
 This module is idempotent: running it multiple times will not duplicate
 facilities, beds, or fleet resources.
+ 
+Transport architecture note (schema alignment): Casualties.evacuation_mode
+and Casualties.evacuation_arrival_time are both nullable. A casualty that
+is placed in the runtime transport queue (no vehicle available at triage
+time - see resource_manager.dispatch_transport / decision_engine) is
+persisted with status="Awaiting Transport", evacuation_mode=NULL, and
+evacuation_arrival_time=NULL - there is no vehicle and no ETA yet, and no
+placeholder string ("Queued", "Unknown", etc.) is ever substituted for
+NULL. A freshly created database already has evacuation_mode as a nullable
+column (see the Casualties CREATE TABLE statement below). An existing
+database created before this change had evacuation_mode as NOT NULL;
+create_schema() detects and migrates that case automatically - see
+_casualties_needs_evacuation_mode_migration() /
+_migrate_casualties_evacuation_mode_nullable() below.
  
 Run standalone with:
     python -m database.init_db
@@ -25,6 +40,7 @@ from backend.utils.constants import (
     MEDICAL_TEAM_ROLES,
     FACILITY_STATUS_OPERATIONAL,
     DATABASE_PATH,
+    VEHICLE_INITIAL_POSITIONS,
 )
  
 logger = logging.getLogger(__name__)
@@ -119,7 +135,7 @@ SCHEMA_STATEMENTS: list[str] = [
         assigned_facility INTEGER,
         bed_id INTEGER,
         queue_position INTEGER,
-        evacuation_mode TEXT NOT NULL,
+        evacuation_mode TEXT,
         evacuation_arrival_time TEXT,
         medical_officer TEXT,
         status TEXT NOT NULL DEFAULT 'Waiting',
@@ -167,6 +183,9 @@ SCHEMA_STATEMENTS: list[str] = [
         release_time TEXT,
         grid_x REAL,
         grid_y REAL,
+        dispatch_time TEXT,
+        origin_grid_x REAL,
+        origin_grid_y REAL,
         FOREIGN KEY (assigned_casualty) REFERENCES Casualties(casualty_id)
     );
     """,
@@ -180,6 +199,9 @@ SCHEMA_STATEMENTS: list[str] = [
         release_time TEXT,
         grid_x REAL,
         grid_y REAL,
+        dispatch_time TEXT,
+        origin_grid_x REAL,
+        origin_grid_y REAL,
         FOREIGN KEY (assigned_casualty) REFERENCES Casualties(casualty_id)
     );
     """,
@@ -208,11 +230,182 @@ INDEX_STATEMENTS: list[str] = [
 ]
  
  
+def _casualties_needs_evacuation_mode_migration(conn) -> bool:
+    """
+    True if a Casualties table already exists AND its evacuation_mode
+    column is still NOT NULL (i.e. this DB predates the transport-queue
+    architecture, where a queued casualty has no vehicle/mode yet).
+ 
+    Returns False if the Casualties table doesn't exist at all - in that
+    case the CREATE TABLE IF NOT EXISTS statement below already defines
+    evacuation_mode as nullable, so a fresh database needs no migration.
+    """
+    columns = conn.execute("PRAGMA table_info(Casualties);").fetchall()
+    if not columns:
+        return False
+    for column in columns:
+        if column["name"] == "evacuation_mode" and column["notnull"] == 1:
+            return True
+    return False
+ 
+ 
+def _migrate_casualties_evacuation_mode_nullable(conn) -> None:
+    """
+    Recreate the Casualties table with evacuation_mode (and
+    evacuation_arrival_time) as nullable columns, preserving every existing
+    row exactly as-is - no column is backfilled with a placeholder value.
+ 
+    SQLite has no ALTER TABLE ... ALTER COLUMN, so removing a NOT NULL
+    constraint requires the standard SQLite migration procedure: create a
+    new table with the corrected schema, copy all rows across as-is, drop
+    the old table, then rename the new one into place. Dropping the old
+    Casualties table also drops any indexes defined on it
+    (idx_casualties_status, idx_casualties_facility,
+    idx_casualties_incident) - those are recreated afterward by
+    create_schema()'s normal INDEX_STATEMENTS pass, which runs
+    unconditionally right after this function returns.
+    """
+    conn.execute("PRAGMA foreign_keys = OFF;")
+ 
+    conn.execute(
+        """
+        CREATE TABLE Casualties_new (
+            casualty_id TEXT PRIMARY KEY,
+            incident_id TEXT NOT NULL,
+            battle_sector TEXT NOT NULL,
+            grid_x REAL NOT NULL,
+            grid_y REAL NOT NULL,
+            soldier_unit TEXT NOT NULL,
+            rank TEXT NOT NULL,
+            age INTEGER NOT NULL,
+            injury_type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            arrival_time TEXT NOT NULL,
+            assigned_facility INTEGER,
+            bed_id INTEGER,
+            queue_position INTEGER,
+            evacuation_mode TEXT,
+            evacuation_arrival_time TEXT,
+            medical_officer TEXT,
+            status TEXT NOT NULL DEFAULT 'Waiting',
+            expected_recovery TEXT,
+            return_to_duty TEXT,
+            FOREIGN KEY (incident_id) REFERENCES Incidents(incident_id),
+            FOREIGN KEY (assigned_facility) REFERENCES Facilities(facility_id),
+            FOREIGN KEY (bed_id) REFERENCES Beds(bed_id)
+        );
+        """
+    )
+ 
+    conn.execute(
+        """
+        INSERT INTO Casualties_new (
+            casualty_id, incident_id, battle_sector, grid_x, grid_y,
+            soldier_unit, rank, age, injury_type, severity, priority,
+            arrival_time, assigned_facility, bed_id, queue_position,
+            evacuation_mode, evacuation_arrival_time, medical_officer,
+            status, expected_recovery, return_to_duty
+        )
+        SELECT
+            casualty_id, incident_id, battle_sector, grid_x, grid_y,
+            soldier_unit, rank, age, injury_type, severity, priority,
+            arrival_time, assigned_facility, bed_id, queue_position,
+            evacuation_mode, evacuation_arrival_time, medical_officer,
+            status, expected_recovery, return_to_duty
+        FROM Casualties;
+        """
+    )
+ 
+    conn.execute("DROP TABLE Casualties;")
+    conn.execute("ALTER TABLE Casualties_new RENAME TO Casualties;")
+    conn.execute("PRAGMA foreign_keys = ON;")
+ 
+    logger.info(
+        "Migrated Casualties.evacuation_mode / evacuation_arrival_time to "
+        "nullable columns; all existing rows preserved unchanged."
+    )
+ 
+ 
+# --------------------------------------------------------------------------
+# Phase 6A - resource movement metadata migration
+#
+# Adds three new nullable columns to Ambulances and Helicopters:
+# dispatch_time, origin_grid_x, origin_grid_y. Unlike the evacuation_mode
+# migration above (which had to remove a NOT NULL constraint and therefore
+# required the full create-copy-drop-rename table recreation), this only
+# ADDS new nullable columns with no default - SQLite supports
+# ALTER TABLE ... ADD COLUMN directly for that case, so no table
+# recreation is needed here. Existing rows simply get NULL in the three
+# new columns, which is the correct "not yet known" representation - not
+# a placeholder value.
+# --------------------------------------------------------------------------
+_RESOURCE_MOVEMENT_METADATA_COLUMNS: dict[str, str] = {
+    "dispatch_time": "TEXT",
+    "origin_grid_x": "REAL",
+    "origin_grid_y": "REAL",
+}
+ 
+ 
+def _missing_resource_movement_metadata_columns(conn, table_name: str) -> list[tuple[str, str]]:
+    """Which of dispatch_time/origin_grid_x/origin_grid_y are missing from `table_name`, if any."""
+    existing_columns = {
+        row["name"] for row in conn.execute(f"PRAGMA table_info({table_name});").fetchall()
+    }
+    return [
+        (column_name, sql_type)
+        for column_name, sql_type in _RESOURCE_MOVEMENT_METADATA_COLUMNS.items()
+        if column_name not in existing_columns
+    ]
+ 
+ 
+def _migrate_resource_movement_metadata(conn) -> None:
+    """
+    Add any missing movement-metadata columns to Ambulances and
+    Helicopters. Safe to call every startup - only ALTERs a table when a
+    column is actually missing, so a fresh database (already created with
+    these columns via SCHEMA_STATEMENTS) is a no-op here.
+    """
+    for table_name in ("Ambulances", "Helicopters"):
+        missing = _missing_resource_movement_metadata_columns(conn, table_name)
+        for column_name, sql_type in missing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type};")
+        if missing:
+            logger.info(
+                "Added movement-metadata column(s) %s to %s.",
+                [column_name for column_name, _ in missing],
+                table_name,
+            )
+ 
+ 
 def create_schema() -> None:
-    """Create all tables and indexes if they do not already exist."""
+    """
+    Create all tables and indexes if they do not already exist.
+ 
+    Runs the evacuation_mode migration check FIRST, before the normal
+    CREATE TABLE IF NOT EXISTS pass - CREATE TABLE IF NOT EXISTS is a
+    no-op against a Casualties table that already exists with the old
+    (NOT NULL) column definition, so the migration must happen ahead of
+    it, not rely on it.
+ 
+    The resource-movement-metadata migration (Phase 6A) runs AFTER the
+    CREATE TABLE IF NOT EXISTS pass instead, since ALTER TABLE ADD COLUMN
+    requires the table to already exist - for a fresh database that pass
+    already creates Ambulances/Helicopters with these columns present, so
+    the migration below simply finds nothing missing and does nothing.
+ 
+    Index (re)creation always runs last so any indexes dropped by the
+    evacuation_mode migration's table-recreation are restored.
+    """
     with get_connection() as conn:
+        if _casualties_needs_evacuation_mode_migration(conn):
+            _migrate_casualties_evacuation_mode_nullable(conn)
+ 
         for statement in SCHEMA_STATEMENTS:
             conn.execute(statement)
+ 
+        _migrate_resource_movement_metadata(conn)
+ 
         for statement in INDEX_STATEMENTS:
             conn.execute(statement)
     logger.info("Schema created (or already present).")
@@ -268,23 +461,76 @@ def seed_facilities_and_beds() -> None:
         logger.info("Facilities and beds seeded.")
  
  
+def _backfill_missing_vehicle_positions(conn) -> None:
+    """
+    Phase 6A.1: one-time backfill for databases seeded BEFORE
+    VEHICLE_INITIAL_POSITIONS existed (or any row that otherwise ended up
+    with a NULL grid_x/grid_y). Sets grid_x/grid_y to the vehicle type's
+    deterministic initial position, but ONLY for rows still NULL - it
+    never overwrites a position a later phase may already be tracking
+    (e.g. a vehicle mid-dispatch that a future phase has started moving).
+ 
+    Touches only grid_x/grid_y. Does not touch status, release_time,
+    assigned_casualty, dispatch_time, origin_grid_x, or origin_grid_y -
+    no transport behavior is affected by this backfill.
+    """
+    amb_pos = VEHICLE_INITIAL_POSITIONS["Ambulance"]
+    ambulances_updated = conn.execute(
+        "UPDATE Ambulances SET grid_x = ?, grid_y = ? WHERE grid_x IS NULL OR grid_y IS NULL",
+        (amb_pos["grid_x"], amb_pos["grid_y"]),
+    ).rowcount
+ 
+    heli_pos = VEHICLE_INITIAL_POSITIONS["Helicopter"]
+    helicopters_updated = conn.execute(
+        "UPDATE Helicopters SET grid_x = ?, grid_y = ? WHERE grid_x IS NULL OR grid_y IS NULL",
+        (heli_pos["grid_x"], heli_pos["grid_y"]),
+    ).rowcount
+ 
+    if ambulances_updated or helicopters_updated:
+        logger.info(
+            "Backfilled initial grid_x/grid_y for %d ambulance(s) and %d helicopter(s) "
+            "that predated VEHICLE_INITIAL_POSITIONS.",
+            ambulances_updated,
+            helicopters_updated,
+        )
+ 
+ 
 def seed_resource_fleets() -> None:
-    """Insert the fixed pools of ambulances, helicopters, and medical teams."""
+    """
+    Insert the fixed pools of ambulances, helicopters, and medical teams.
+ 
+    Phase 6A.1: ambulances/helicopters are now seeded with grid_x/grid_y
+    already set to their type's deterministic initial position
+    (VEHICLE_INITIAL_POSITIONS), so every vehicle has a valid position
+    from the moment it exists - not just after some future phase starts
+    tracking movement. If fleets already exist (e.g. an app restart, or
+    a database seeded before this fix), _backfill_missing_vehicle_positions()
+    still runs so any pre-existing NULL row gets a valid position too.
+    """
     with get_connection() as conn:
         existing = conn.execute("SELECT COUNT(*) AS c FROM Ambulances").fetchone()["c"]
         if existing > 0:
-            logger.info("Resource fleets already seeded, skipping.")
+            _backfill_missing_vehicle_positions(conn)
+            logger.info("Resource fleets already seeded, skipping (existing rows backfilled if needed).")
             return
  
-        ambulance_rows = [(f"AMB-{i:02d}", "Available") for i in range(1, AMBULANCE_FLEET_SIZE + 1)]
+        amb_pos = VEHICLE_INITIAL_POSITIONS["Ambulance"]
+        ambulance_rows = [
+            (f"AMB-{i:02d}", "Available", amb_pos["grid_x"], amb_pos["grid_y"])
+            for i in range(1, AMBULANCE_FLEET_SIZE + 1)
+        ]
         conn.executemany(
-            "INSERT INTO Ambulances (call_sign, status) VALUES (?, ?)",
+            "INSERT INTO Ambulances (call_sign, status, grid_x, grid_y) VALUES (?, ?, ?, ?)",
             ambulance_rows,
         )
  
-        helicopter_rows = [(f"HELI-{i:02d}", "Available") for i in range(1, HELICOPTER_FLEET_SIZE + 1)]
+        heli_pos = VEHICLE_INITIAL_POSITIONS["Helicopter"]
+        helicopter_rows = [
+            (f"HELI-{i:02d}", "Available", heli_pos["grid_x"], heli_pos["grid_y"])
+            for i in range(1, HELICOPTER_FLEET_SIZE + 1)
+        ]
         conn.executemany(
-            "INSERT INTO Helicopters (call_sign, status) VALUES (?, ?)",
+            "INSERT INTO Helicopters (call_sign, status, grid_x, grid_y) VALUES (?, ?, ?, ?)",
             helicopter_rows,
         )
  

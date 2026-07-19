@@ -25,7 +25,6 @@ must never be changed here.
 
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import timedelta
 import random
 
 from backend.database import crud
@@ -42,7 +41,7 @@ class DecisionResult:
     severity: str
     priority: str
     facility_code: str
-    evacuation_mode: str
+    evacuation_mode: str | None
     status: str          # "Being Evacuated" at creation time
     log_entry: MissionLogEntry
 
@@ -70,14 +69,13 @@ def process_casualty(
     casualty_id = crud.get_next_casualty_id()
     arrival_time_str = draft.arrival_time.strftime("%Y-%m-%d %H:%M")
 
-    evacuation_mode, resource_id, transit_minutes = resource_manager.dispatch_transport(
+    transport_result = resource_manager.dispatch_transport(
+        casualty_id=casualty_id,
         severity=draft.severity,
+        facility_code=facility_code,
         clock=clock,
         casualty_arrival_time=draft.arrival_time,
-        rng=rng,
     )
-    evacuation_arrival = draft.arrival_time + timedelta(minutes=transit_minutes)
-    evacuation_arrival_str = evacuation_arrival.strftime("%Y-%m-%d %H:%M")
 
     crud.insert_casualty(
         {
@@ -96,38 +94,53 @@ def process_casualty(
             "assigned_facility": facility.facility_id,
             "bed_id": None,
             "queue_position": None,
-            "evacuation_mode": evacuation_mode,
-            "evacuation_arrival_time": evacuation_arrival_str,
             "medical_officer": None,
-            "status": "Being Evacuated",
+            "evacuation_mode": transport_result.evacuation_mode,
+            "evacuation_arrival_time": transport_result.evacuation_arrival_time,
+            "status": transport_result.status,
             "expected_recovery": None,
             "return_to_duty": None,
         }
     )
 
-    # Now that the casualty row exists, link the dispatched resource to it
-    # (dispatch happened first so the resource's release timer starts
-    # immediately, matching real dispatch timing rather than DB row order).
-    resource_manager.attach_casualty_to_resource(evacuation_mode, resource_id, casualty_id)
+    if transport_result.dispatched:
+        resource_manager.attach_casualty_to_resource(
+            transport_result.evacuation_mode,
+            transport_result.resource_id,
+            casualty_id,
+        )
 
-    log_entry = make_entry(
-        timestamp=clock.formatted_datetime(),
-        category=CATEGORY_DISPATCH,
-        message=(
-            f"{casualty_id} ({draft.severity}, {priority}) picked up by {evacuation_mode}, "
-            f"en route to {facility_code} (ETA {transit_minutes} min)"
-        ),
-        facility=facility_code,
-        severity=draft.severity,
-    )
+    if transport_result.dispatched:
+        log_entry = make_entry(
+            timestamp=clock.formatted_datetime(),
+            category=CATEGORY_DISPATCH,
+            message=(
+                f"{casualty_id} ({draft.severity}, {priority}) picked up by "
+                f"{transport_result.evacuation_mode}, en route to {facility_code} "
+                f"(ETA {transport_result.transit_minutes} min)"
+            ),
+            facility=facility_code,
+            severity=draft.severity,
+        )
+    else:
+        log_entry = make_entry(
+            timestamp=clock.formatted_datetime(),
+            category=CATEGORY_DISPATCH,
+            message=(
+                f"{casualty_id} ({draft.severity}, {priority}) awaiting transport to "
+                f"{facility_code} - no vehicle available, queued"
+            ),
+            facility=facility_code,
+            severity=draft.severity,
+        )
 
     return DecisionResult(
         casualty_id=casualty_id,
         severity=draft.severity,
         priority=priority,
         facility_code=facility_code,
-        evacuation_mode=evacuation_mode,
-        status="Being Evacuated",
+        evacuation_mode=transport_result.evacuation_mode,
+        status=transport_result.status,
         log_entry=log_entry,
     )
 

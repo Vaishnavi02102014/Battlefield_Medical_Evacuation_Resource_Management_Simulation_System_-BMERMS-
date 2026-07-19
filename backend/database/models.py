@@ -1,4 +1,3 @@
-
 """
 models.py
  
@@ -121,7 +120,7 @@ class Casualty:
     assigned_facility: Optional[int]
     bed_id: Optional[int]
     queue_position: Optional[int]
-    evacuation_mode: str
+    evacuation_mode: Optional[str]   # None for casualties still "Awaiting Transport" in the queue
     evacuation_arrival_time: Optional[str]
     medical_officer: Optional[str]
     status: str
@@ -171,6 +170,9 @@ class Ambulance:
     release_time: Optional[str]
     grid_x: float
     grid_y: float
+    dispatch_time: Optional[str] = None      # Phase 6A: when this vehicle's current trip departed
+    origin_grid_x: Optional[float] = None    # Phase 6A: where this vehicle's current trip departed from
+    origin_grid_y: Optional[float] = None
  
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Ambulance":
@@ -186,6 +188,9 @@ class Helicopter:
     release_time: Optional[str]
     grid_x: float
     grid_y: float
+    dispatch_time: Optional[str] = None      # Phase 6A: when this vehicle's current trip departed
+    origin_grid_x: Optional[float] = None    # Phase 6A: where this vehicle's current trip departed from
+    origin_grid_y: Optional[float] = None
  
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Helicopter":

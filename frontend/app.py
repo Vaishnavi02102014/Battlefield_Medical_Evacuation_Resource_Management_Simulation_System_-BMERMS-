@@ -24,6 +24,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from backend.database.init_db import initialize_database
+initialize_database()
+
 from backend.database import crud
 from backend.simulation.simulation_clock import SimulationClock
 from backend.simulation.simulation_controller import SimulationController
@@ -38,6 +41,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
 
 if "simulation_initialized" not in st.session_state:
     crud.reset_simulation_data()
