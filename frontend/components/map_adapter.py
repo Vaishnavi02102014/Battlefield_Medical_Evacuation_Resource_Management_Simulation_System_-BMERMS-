@@ -183,6 +183,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 from backend.database import crud
+from backend.utils.constants import VEHICLE_INITIAL_POSITIONS
 
 from components.map_constants import FRONTEND_MAP_LAYOUT
 logger = logging.getLogger(__name__)
@@ -648,10 +649,15 @@ STAGING_BASE_LAYOUT: dict[str, dict] = {
         "label": "Forward Ambulance Staging",
         "subtitle": "Ground Evacuation Reserve",
         "resource_label": "Ambulances",
-        "grid_x": 5.0,
-        "grid_y": 30.0,
+        "grid_x": VEHICLE_INITIAL_POSITIONS["Ambulance"]["grid_x"],
+        "grid_y": VEHICLE_INITIAL_POSITIONS["Ambulance"]["grid_y"],
     },
     "medical_team": {
+        # Medical Teams have no backend vehicle-position equivalent - they
+        # have no travel/motion concept in the data model (see Phase 6B
+        # note above and constants.VEHICLE_INITIAL_POSITIONS' own
+        # docstring, which only covers Ambulance/Helicopter). This marker
+        # position therefore remains presentation-only, same as before.
         "label": "Medical Reserve",
         "subtitle": "Deployable Medical Teams",
         "resource_label": "Medical Teams",
@@ -662,8 +668,8 @@ STAGING_BASE_LAYOUT: dict[str, dict] = {
         "label": "Air MEDEVAC Base",
         "subtitle": "Air Evacuation Reserve",
         "resource_label": "Helicopters",
-        "grid_x": 88.0,
-        "grid_y": 52.0,
+        "grid_x": VEHICLE_INITIAL_POSITIONS["Helicopter"]["grid_x"],
+        "grid_y": VEHICLE_INITIAL_POSITIONS["Helicopter"]["grid_y"],
     },
 }
 

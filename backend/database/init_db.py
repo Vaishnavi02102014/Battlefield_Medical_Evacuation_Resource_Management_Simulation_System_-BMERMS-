@@ -1,4 +1,5 @@
 
+ 
 """
 init_db.py
  
@@ -495,6 +496,94 @@ def _backfill_missing_vehicle_positions(conn) -> None:
         )
  
  
+def _legacy_vehicle_staging_positions() -> dict[str, tuple[float, float]]:
+    """
+    Known HISTORICAL VEHICLE_INITIAL_POSITIONS values that have since
+    been corrected in constants.py, keyed by vehicle type.
+ 
+    This is deliberately NOT a "single source of truth" constant the way
+    VEHICLE_INITIAL_POSITIONS is - it's the opposite: a fixed record of
+    what that constant used to say, before it was corrected, kept only so
+    _migrate_legacy_vehicle_staging_positions() can recognize a row that
+    still holds one of these old values. There is nowhere else in the
+    live codebase these superseded values could be read from, since
+    constants.py (correctly) only ever holds the current one.
+ 
+    Once a value is added here it must never be edited or removed, even
+    after the migration has run everywhere - a fresh/older database
+    restored from backup could still hold it, and the migration must stay
+    able to recognize it on any future run. If VEHICLE_INITIAL_POSITIONS
+    is corrected again later, add the value being replaced as a new entry
+    here (or extend the tuple search below to a list per type) rather
+    than overwriting this one.
+    """
+    return {
+        "Ambulance": (35.0, 11.0),    # Phase 6A.1 original value
+        "Helicopter": (85.0, 50.0),   # Phase 6A.1 original value
+    }
+ 
+ 
+def _migrate_legacy_vehicle_staging_positions(conn) -> None:
+    """
+    One-time correction for Ambulances/Helicopters rows whose grid_x/
+    grid_y still hold a known-legacy staging position (see
+    _legacy_vehicle_staging_positions()) rather than the CURRENT
+    VEHICLE_INITIAL_POSITIONS value.
+ 
+    This is a different case from _backfill_missing_vehicle_positions()
+    above: that function only fills in rows where the position is
+    missing (NULL). This function corrects rows where the position is
+    present but STALE - exactly the gap identified by the Reset
+    Simulation workflow audit: reset_simulation_data() intentionally only
+    resets simulation state (status/assigned_casualty/release_time), not
+    a vehicle's position, and a vehicle is otherwise only ever positioned
+    once, at original seed time. Neither Reset Simulation nor any other
+    existing code path can correct a position that was valid when written
+    but has since been superseded by a constants.py update - this
+    migration is the one place that happens, and reset_simulation_data()
+    itself remains completely unmodified.
+ 
+    The migration TARGET always comes from VEHICLE_INITIAL_POSITIONS
+    (never a hardcoded literal), so if that constant is corrected again
+    in the future, this function picks up the new target automatically
+    with no code change here - only _legacy_vehicle_staging_positions()
+    needs a new entry to recognize the next "old" value.
+ 
+    Idempotent and safe to run on every startup: the WHERE clause only
+    matches rows whose value EXACTLY equals a known legacy tuple. Once a
+    row is migrated, its value equals the CURRENT VEHICLE_INITIAL_POSITIONS
+    value, which is not itself a legacy value, so re-running this
+    function finds nothing left to update. Deliberately exact-match only
+    (not "any non-NULL value") so it can never touch a row some future
+    phase has legitimately repositioned for an unrelated reason - only
+    rows that still look exactly like a known old default are corrected.
+    """
+    legacy_positions = _legacy_vehicle_staging_positions()
+ 
+    for table_name, vehicle_type in (
+        ("Ambulances", "Ambulance"),
+        ("Helicopters", "Helicopter"),
+    ):
+        legacy_x, legacy_y = legacy_positions[vehicle_type]
+        current_position = VEHICLE_INITIAL_POSITIONS[vehicle_type]
+ 
+        updated = conn.execute(
+            f"UPDATE {table_name} SET grid_x = ?, grid_y = ? WHERE grid_x = ? AND grid_y = ?",
+            (current_position["grid_x"], current_position["grid_y"], legacy_x, legacy_y),
+        ).rowcount
+ 
+        if updated:
+            logger.info(
+                "Migrated %d %s row(s) from legacy staging position (%s, %s) to current (%s, %s).",
+                updated,
+                table_name,
+                legacy_x,
+                legacy_y,
+                current_position["grid_x"],
+                current_position["grid_y"],
+            )
+ 
+ 
 def seed_resource_fleets() -> None:
     """
     Insert the fixed pools of ambulances, helicopters, and medical teams.
@@ -506,12 +595,21 @@ def seed_resource_fleets() -> None:
     tracking movement. If fleets already exist (e.g. an app restart, or
     a database seeded before this fix), _backfill_missing_vehicle_positions()
     still runs so any pre-existing NULL row gets a valid position too.
+ 
+    Also runs _migrate_legacy_vehicle_staging_positions() in that same
+    branch, correcting any row still holding a known-superseded staging
+    coordinate (e.g. an ambulance still at (35, 11) from before
+    VEHICLE_INITIAL_POSITIONS was corrected to (5, 30)) to the current
+    value. This is independent of, and not a substitute for, Reset
+    Simulation, which intentionally never touches vehicle position at
+    all - see the Reset Simulation workflow audit.
     """
     with get_connection() as conn:
         existing = conn.execute("SELECT COUNT(*) AS c FROM Ambulances").fetchone()["c"]
         if existing > 0:
             _backfill_missing_vehicle_positions(conn)
-            logger.info("Resource fleets already seeded, skipping (existing rows backfilled if needed).")
+            _migrate_legacy_vehicle_staging_positions(conn)
+            logger.info("Resource fleets already seeded, skipping (existing rows backfilled/migrated if needed).")
             return
  
         amb_pos = VEHICLE_INITIAL_POSITIONS["Ambulance"]

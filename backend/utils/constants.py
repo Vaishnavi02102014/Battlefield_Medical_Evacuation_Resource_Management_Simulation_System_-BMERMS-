@@ -303,17 +303,27 @@ TRANSPORT_TIME: dict[str, dict[str, int]] = {
 # Depth follows the same MEDEVAC-doctrine reasoning as FACILITY_CONFIG
 # (front line y=2-5, RAP y=8, ADS y=25, HMV y=55, FDC y=85): ambulances
 # stage forward, helicopters stage further back. These coordinates are
-# intentionally chosen to match where the tactical map's Operational
-# Staging Base markers are currently drawn (map_adapter.STAGING_BASE_LAYOUT),
-# so a freshly seeded vehicle's backend position lines up with its visual
-# staging-base marker - but the two are independent constants today, not
-# a shared import, since map_adapter.py is a presentation module and this
-# is backend/database seed configuration. A future phase could have
-# map_adapter.py import its Ambulance/Helicopter entries from this same
-# dict to remove that duplication entirely; not done here to avoid
-# touching map_adapter.py in a backend-only phase.
+# also what the tactical map's Operational Staging Base markers render at
+# (map_adapter.STAGING_BASE_LAYOUT): map_adapter.py imports this dict
+# directly for its "ambulance"/"helicopter" entries rather than
+# redefining the values, so a freshly seeded/released vehicle's backend
+# position always lines up with its visual staging-base marker with a
+# single source of truth. ("medical_team" has no entry here and keeps
+# its own presentation-only coordinate in map_adapter.py, since medical
+# teams have no travel/motion concept or backend grid_x/grid_y in this
+# data model.)
+# Values corrected to (5.0, 30.0) / (88.0, 52.0): the original Phase 6A.1
+# values here ((35.0, 11.0) / (85.0, 50.0)) were only an approximation and
+# had drifted from the actual staging-base positions rendered on the
+# tactical map (Phase 7A's overlap-free triangulation). Since map_adapter
+# now imports this dict as the single source of truth, this constant was
+# corrected to the values already visible on screen, rather than the
+# other way around - this keeps rendering pixel-identical while finally
+# making a vehicle's true backend dispatch origin match its visual
+# staging base exactly, closing a gap the previous phase intended but
+# didn't fully achieve.
 # --------------------------------------------------------------------------
 VEHICLE_INITIAL_POSITIONS: dict[str, dict[str, float]] = {
-    "Ambulance": {"grid_x": 35.0, "grid_y": 11.0},
-    "Helicopter": {"grid_x": 85.0, "grid_y": 50.0},
+    "Ambulance": {"grid_x": 5.0, "grid_y": 30.0},
+    "Helicopter": {"grid_x": 88.0, "grid_y": 52.0},
 }
