@@ -1,0 +1,9 @@
+branca
+folium
+joblib
+pandas==2.1.0
+plotly
+scikit-learn
+streamlit==1.51.0
+streamlit-autorefresh
+streamlit-folium
